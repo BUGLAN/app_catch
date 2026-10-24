@@ -40,8 +40,8 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::error::{AppCatchError, Result};
 use crate::platform::{
-    BackendFuture, ExitStatusInfo, IconCapture, IconTarget, ProcessBackend, ProcessHandle,
-    ProcessStartTime, SpawnRequest, SpawnedProcess,
+    BackendFuture, ExitStatusInfo, ProcessBackend, ProcessHandle, ProcessStartTime, SpawnRequest,
+    SpawnedProcess,
 };
 
 /// OpenProcess 需要的访问权限：等待退出 + 查询有限信息（兼容受保护进程）。
@@ -636,20 +636,5 @@ fn observe_exit_code(process: HANDLE) -> Result<ExitStatusInfo> {
     })
 }
 
-/// Windows 图标捕获（M3 落地真实抓取，本阶段恒返回 None 走兜底图）。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WindowsIconCapture;
-
-impl WindowsIconCapture {
-    /// 构造图标捕获实现。
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl IconCapture for WindowsIconCapture {
-    fn capture(&self, _target: &IconTarget) -> Option<std::path::PathBuf> {
-        // 尽力而为的接口约定：抓不到就返回 None，由调用方走内置兜底图
-        None
-    }
-}
+// 图标捕获已迁到 `platform::icon_windows`（M3）：
+// 该模块同时负责窗口 HICON、exe 资源图标与 PNG 缓存，与进程后端解耦。

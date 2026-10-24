@@ -18,6 +18,8 @@ time = { workspace = true }
 tokio = { workspace = true }
 # 非 UTF-8 输出解码：Windows 回退到 GBK/GB18030（cp936），见 docs/SESSION_FORMAT.md「编码处理策略」
 encoding_rs = { workspace = true }
+# 图标缓存统一编码为 PNG，见 docs/ICONS.md「为什么用 png 而不是 image」
+png = { workspace = true }
 
 # Windows 运行时后端：Job Object 杀树 + 进程启动时间校验
 [target.'cfg(windows)'.dependencies]

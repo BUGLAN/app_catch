@@ -26,6 +26,12 @@ use crate::session::SessionId;
 
 #[cfg(not(windows))]
 pub mod fallback;
+/// 图标核心：位图规范化、PNG 编解码、缓存判定（**不含平台 API**，任何平台都能单测）。
+pub mod icon;
+/// Windows 图标抓取：窗口 HICON / exe 资源图标 -> PNG 缓存。
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub mod icon_windows;
 /// Windows 实现直接调用 Win32 API，是本 crate 允许 `unsafe` 的模块之一。
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -41,15 +47,15 @@ pub mod ports;
 #[allow(unsafe_code)]
 pub mod window;
 
+pub use icon::{cache_path, CacheState, RgbaImage, ICON_MAX_SIZE};
+#[cfg(windows)]
+pub use icon_windows::{file_icon, window_icon_for_pids, WindowsIconCapture};
 #[cfg(windows)]
 pub use ports::{listening_ports_for_pid, listening_ports_for_pids};
 #[cfg(windows)]
-pub use window::{window_title_for_pid, window_title_for_pids};
+pub use window::{main_window_for_pids, window_title_for_pid, window_title_for_pids};
 #[cfg(windows)]
-pub use windows::{
-    descendant_pids, is_process_alive, pid_exists_in_snapshot, WindowsIconCapture,
-    WindowsProcessBackend,
-};
+pub use windows::{descendant_pids, is_process_alive, pid_exists_in_snapshot, WindowsProcessBackend};
 #[cfg(not(windows))]
 pub use fallback::{FallbackIconCapture, FallbackProcessBackend};
 
@@ -265,9 +271,16 @@ pub trait ProcessBackend: Send + Sync {
     fn wait<'a>(&'a self, handle: &'a ProcessHandle) -> BackendFuture<'a, Result<ExitStatusInfo>>;
 }
 
-/// 图标捕获目标：可执行文件 + （可能的）运行中窗口信息。
+/// 图标捕获目标：应用身份 + 可执行文件 + （可能的）运行中窗口信息。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IconTarget {
+    /// 应用 id（M3 新增）：决定缓存文件名 `<home>/icons/<app_id>.png`。
+    ///
+    /// 没有它就无法按应用维度的缓存，因此捕获入口必须有 app_id；
+    /// 缺失时 [`IconCapture::capture`] 直接返回 `None`（走前端内置兜底图）。
+    pub app_id: Option<AppId>,
+    /// 用户在配置里指定的自定义图标（`AppConfig.icon`），优先级最高。
+    pub custom_icon: Option<PathBuf>,
     /// 可执行文件路径（Windows 从 exe 资源取图标）。
     pub executable: Option<PathBuf>,
     /// 关联进程 pid（用于按窗口取图标）。
@@ -277,21 +290,53 @@ pub struct IconTarget {
 }
 
 impl IconTarget {
-    /// 只按可执行文件抓取。
+    /// 只按可执行文件抓取（无应用 id 时不会落缓存）。
     pub fn from_executable(path: impl Into<PathBuf>) -> Self {
         Self {
             executable: Some(path.into()),
-            pid: None,
-            window_title: None,
+            ..Self::default()
         }
+    }
+
+    /// 按应用身份构造：缓存路径与优先级链都需要它。
+    pub fn for_app(app_id: AppId) -> Self {
+        Self {
+            app_id: Some(app_id),
+            ..Self::default()
+        }
+    }
+
+    /// 补上自定义图标（builder 风格，便于命令层链式构造）。
+    #[must_use]
+    pub fn with_custom_icon(mut self, icon: Option<PathBuf>) -> Self {
+        self.custom_icon = icon;
+        self
+    }
+
+    /// 补上运行中会话的根 pid。
+    #[must_use]
+    pub fn with_pid(mut self, pid: Option<u32>) -> Self {
+        self.pid = pid;
+        self
+    }
+
+    /// 补上可执行文件路径。
+    #[must_use]
+    pub fn with_executable(mut self, path: Option<PathBuf>) -> Self {
+        self.executable = path;
+        self
     }
 }
 
 /// 图标捕获：尽力而为，失败（含无窗口服务类应用）返回 `None`，由调用方走内置兜底图。
+///
+/// 实现约定（M3）：
+/// - **绝不返回错误**：抓不到就是 `None`，不写日志、不影响会话启动；
+/// - **必须能重入**：命令层在会话启动后会再调一次拿「运行时图标」；
+/// - **可能较慢**：内部会调 Shell API（`PrivateExtractIconsW`/`SHGetFileInfoW`），
+///   调用方应放进 `spawn_blocking`（见 `src-tauri` 的 `get_app_icon` 命令）。
 pub trait IconCapture: Send + Sync {
     /// 抓取图标并返回缓存后的 PNG 路径；抓不到返回 `None`。
-    ///
-    /// M1b 仍为占位实现，真实抓取在 M3 落地。
     fn capture(&self, target: &IconTarget) -> Option<PathBuf>;
 }
 
@@ -357,13 +402,41 @@ mod tests {
         let target = IconTarget::from_executable("C:/Windows/notepad.exe");
         assert_eq!(target.executable, Some(PathBuf::from("C:/Windows/notepad.exe")));
         assert_eq!(target.pid, None);
+        assert_eq!(target.app_id, None, "未指定应用时不该有缓存身份");
         assert_eq!(
             IconTarget::default(),
             IconTarget {
+                app_id: None,
+                custom_icon: None,
                 executable: None,
                 pid: None,
                 window_title: None,
             }
+        );
+    }
+
+    /// builder 链：命令层按「应用 id + 自定义图标 + exe + pid」逐项补齐目标。
+    #[test]
+    fn icon_target_builder_chain_fills_all_slots() {
+        let target = IconTarget::for_app(AppId::new("demo").expect("合法 id"))
+            .with_custom_icon(Some(PathBuf::from("C:/x/icon.png")))
+            .with_executable(Some(PathBuf::from("C:/x/app.exe")))
+            .with_pid(Some(4242));
+
+        assert_eq!(target.app_id.as_ref().map(AppId::as_str), Some("demo"));
+        assert_eq!(target.custom_icon, Some(PathBuf::from("C:/x/icon.png")));
+        assert_eq!(target.executable, Some(PathBuf::from("C:/x/app.exe")));
+        assert_eq!(target.pid, Some(4242));
+    }
+
+    /// 缺少 app_id 时图标捕获必须安静地返回 None（没有缓存身份）。
+    #[test]
+    fn capture_without_app_id_returns_none() {
+        let capture = default_icon_capture();
+        assert_eq!(capture.capture(&IconTarget::default()), None);
+        assert_eq!(
+            capture.capture(&IconTarget::from_executable("C:/x/app.exe")),
+            None
         );
     }
 

@@ -33,8 +33,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
 };
 
-/// 一个候选窗口：标题 + 面积。
+/// 一个候选窗口：窗口句柄 + 标题 + 面积。
 struct Candidate {
+    /// 窗口句柄；M3 的图标抓取直接对它发 WM_GETICON。
+    hwnd: HWND,
     title: String,
     /// 窗口面积（宽 × 高）；`GetWindowRect` 失败时为 0。
     area: i64,
@@ -134,6 +136,7 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> windows_sys::
     };
 
     ctx.candidates.push(Candidate {
+        hwnd,
         title,
         area: window_area(hwnd),
     });
@@ -166,6 +169,18 @@ fn collect_candidates(pids: &[u32]) -> Option<Vec<Candidate>> {
     Some(ctx.candidates)
 }
 
+/// 取目标进程树中「主窗口」的窗口句柄；找不到返回 `None`（不报错）。
+///
+/// 与 [`window_title_for_pids`] 共用同一套打分规则（淘汰工具窗口 + 取面积最大者），
+/// 保证「采到的标题」和「抓到的图标」来自**同一个窗口**——
+/// 否则会出现「标题是主窗口、图标却是托盘气泡」这种自相矛盾的结果。
+///
+/// 用途：M3 的运行时图标抓取（对主窗口发 WM_GETICON）。
+pub fn main_window_for_pids(pids: &[u32]) -> Option<HWND> {
+    let candidates = collect_candidates(pids)?;
+    candidates.into_iter().max_by_key(|c| c.area).map(|c| c.hwnd)
+}
+
 /// 取目标进程树中「主窗口」的标题；找不到返回 `None`（不报错）。
 ///
 /// `pids` 应当包含根 pid 与其全部子孙 pid（见 `descendant_pids`），
@@ -196,6 +211,7 @@ mod tests {
     fn empty_pid_list_yields_none() {
         assert_eq!(window_title_for_pids(&[]), None);
         assert_eq!(window_title_for_pid(0), None);
+        assert_eq!(main_window_for_pids(&[]), None, "空列表不应返回任何窗口句柄");
     }
 
     /// 当前测试进程通常没有可见的顶层窗口（cargo test 是控制台进程）。

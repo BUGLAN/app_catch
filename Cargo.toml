@@ -50,9 +50,18 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
+    # Win32_Graphics_Gdi：HICON -> 位图（GetIconInfo / GetDIBits / DeleteObject）
+    "Win32_Graphics_Gdi",
+    # Win32_UI_Shell：exe/lnk/ico 资源图标（PrivateExtractIconsW / ExtractIconExW / SHGetFileInfoW）
+    "Win32_UI_Shell",
 ] }
 # 文本编码：Windows 中文环境的控制台/日志默认 cp936(GBK)，输出捕获需按平台编码无损解码
 encoding_rs = "0.8"
+# 图标缓存统一编码为 PNG（M3）。
+# 只引入 png 而不是 image：本 crate 只需要「RGBA -> PNG」一条编码路径，
+# image 会连带引入 jpeg/gif/webp/tiff 等完整解码器，依赖面与编译体积大一个数量级。
+# 选择理由与体积对比见 docs/ICONS.md。
+png = "0.18"
 # 仅测试用：临时目录隔离 APP_CATCH_HOME
 tempfile = "3"
 tauri = { version = "2" }
