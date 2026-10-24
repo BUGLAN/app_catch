@@ -5,8 +5,8 @@
 
 use crate::error::{AppCatchError, Result};
 use crate::platform::{
-    ExitStatusInfo, IconCapture, IconTarget, ProcessBackend, ProcessHandle, ProcessStartTime,
-    SpawnRequest, SpawnedProcess,
+    BackendFuture, ExitStatusInfo, IconCapture, IconTarget, ProcessBackend, ProcessHandle,
+    ProcessStartTime, SpawnRequest, SpawnedProcess,
 };
 
 /// 非 Windows 平台的进程后端占位实现。
@@ -28,24 +28,28 @@ fn not_implemented(op: &str) -> AppCatchError {
 }
 
 impl ProcessBackend for FallbackProcessBackend {
-    fn spawn(&self, _request: &SpawnRequest) -> Result<SpawnedProcess> {
-        Err(not_implemented("spawn"))
+    fn spawn<'a>(&'a self, _request: &'a SpawnRequest) -> BackendFuture<'a, Result<SpawnedProcess>> {
+        Box::pin(async move { Err(not_implemented("spawn")) })
     }
 
-    fn kill_tree(&self, _handle: &ProcessHandle) -> Result<()> {
-        Err(not_implemented("kill_tree"))
+    fn kill_tree<'a>(&'a self, _handle: &'a ProcessHandle) -> BackendFuture<'a, Result<()>> {
+        Box::pin(async move { Err(not_implemented("kill_tree")) })
     }
 
-    fn attach(&self, _pid: u32, _start_time: ProcessStartTime) -> Result<Option<ProcessHandle>> {
-        Err(not_implemented("attach"))
+    fn attach<'a>(
+        &'a self,
+        _pid: u32,
+        _start_time: ProcessStartTime,
+    ) -> BackendFuture<'a, Result<Option<ProcessHandle>>> {
+        Box::pin(async move { Err(not_implemented("attach")) })
     }
 
-    fn is_running(&self, _handle: &ProcessHandle) -> Result<bool> {
-        Err(not_implemented("is_running"))
+    fn is_running<'a>(&'a self, _handle: &'a ProcessHandle) -> BackendFuture<'a, Result<bool>> {
+        Box::pin(async move { Err(not_implemented("is_running")) })
     }
 
-    fn wait(&self, _handle: &ProcessHandle) -> Result<ExitStatusInfo> {
-        Err(not_implemented("wait"))
+    fn wait<'a>(&'a self, _handle: &'a ProcessHandle) -> BackendFuture<'a, Result<ExitStatusInfo>> {
+        Box::pin(async move { Err(not_implemented("wait")) })
     }
 }
 

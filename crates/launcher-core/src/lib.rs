@@ -6,17 +6,22 @@
 //! - M1a（当前）只落地数据层：路径布局、配置 TOML 存储、会话事件模型、平台抽象 trait，
 //!   不含任何进程 spawn / 杀进程 / 写 JSONL 的运行时逻辑（那是 M1b）。
 
-#![forbid(unsafe_code)]
+//! 安全边界：除 `platform::windows`（直接调用 Win32 API，必须 unsafe）外，
+//! 其余模块一律禁止 unsafe。`forbid` 无法被子模块豁免，因此用 `deny` +
+//! 在唯一豁免处显式 `#[allow(unsafe_code)]`，保证豁免点可枚举、可审计。
+#![deny(unsafe_code)]
 
 pub mod config;
 pub mod error;
 pub mod fsutil;
 pub mod paths;
 pub mod platform;
+pub mod runtime;
 pub mod session;
 
 pub use config::{AppConfig, AppId, AppStore};
 pub use error::{AppCatchError, Result};
+pub use runtime::{ExitInfo, SessionHandle, SessionManager, SessionSnapshot};
 pub use session::{ExitReason, RunState, SessionEvent, SessionId, StreamKind};
 
 /// 返回本 crate 的版本号（取自 Cargo 包元数据）。

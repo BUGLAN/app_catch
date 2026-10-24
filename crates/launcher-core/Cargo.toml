@@ -15,6 +15,16 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
 time = { workspace = true }
+tokio = { workspace = true }
+
+# Windows 运行时后端：Job Object 杀树 + 进程启动时间校验
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+# 手动验收示例：cargo run -p launcher-core --example session_demo -- cmd /c "echo hi"
+[[example]]
+name = "session_demo"
+path = "examples/session_demo.rs"

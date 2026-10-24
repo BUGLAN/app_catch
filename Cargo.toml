@@ -25,6 +25,26 @@ uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "7"
 # RFC3339 时间戳（带时区偏移，agent 可直接解析）
 time = { version = "0.3", features = ["formatting", "parsing"] }
+# 异步运行时：进程 spawn/等待、管道读取、有界 channel、定时 flush、异步写盘
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "sync",
+    "time",
+    "fs",
+] }
+# Windows 平台 API（只用 windows-sys，不引入重型 windows crate）
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
 # 仅测试用：临时目录隔离 APP_CATCH_HOME
 tempfile = "3"
 tauri = { version = "2" }

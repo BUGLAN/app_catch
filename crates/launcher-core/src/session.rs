@@ -162,7 +162,7 @@ impl RunState {
 ///
 /// 序列化形态（`event` 为标签字段，写在最前）：
 /// ```json
-/// {"event":"start","v":1,"ts":"...","session_id":"...","app_id":"...","cmd":"...","cwd":"...","argv":[],"pid":1,"ppid":0}
+/// {"event":"start","v":1,"ts":"...","session_id":"...","app_id":"...","cmd":"...","cwd":"...","argv":[],"pid":1,"ppid":0,"start_time":0}
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -187,6 +187,12 @@ pub enum SessionEvent {
         pid: u32,
         /// 启动器自身 pid，便于回溯是谁拉起的。
         ppid: u32,
+        /// 子进程启动时间的平台原始值（Windows 为 FILETIME，100ns 粒度）。
+        ///
+        /// 与 `pid` 一起构成「进程身份」：重启启动器后据此判断该 pid 是否已被复用，
+        /// 是 F4 重关联（attach）的唯一依据。缺省为 0 表示旧事件未记录（视为无法重关联）。
+        #[serde(default)]
+        start_time: u64,
     },
     /// 一行输出（stdout 或 stderr）。
     Output {
@@ -239,6 +245,10 @@ pub enum SessionEvent {
 
 impl SessionEvent {
     /// 构造 start 事件（自动填版本与时间戳）。
+    ///
+    /// `start_time` 是子进程启动时间的平台原始值，与 `pid` 一起构成进程身份；
+    /// 无法取得时传 0（该会话将无法被重关联）。
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         session_id: SessionId,
         app_id: impl Into<String>,
@@ -247,6 +257,7 @@ impl SessionEvent {
         argv: Vec<String>,
         pid: u32,
         ppid: u32,
+        start_time: u64,
     ) -> Self {
         Self::Start {
             v: SESSION_EVENT_VERSION,
@@ -258,6 +269,7 @@ impl SessionEvent {
             argv,
             pid,
             ppid,
+            start_time,
         }
     }
 
@@ -373,6 +385,7 @@ mod tests {
             ],
             4242,
             1234,
+            133_000_000_000_000_000,
         )
     }
 
@@ -448,6 +461,7 @@ mod tests {
             "\"argv\":",
             "\"pid\":",
             "\"ppid\":",
+            "\"start_time\":",
         ] {
             assert!(line.contains(key), "start 事件缺少字段 {key}: {line}");
         }
@@ -523,6 +537,35 @@ mod tests {
                 assert_eq!(reason, ExitReason::Killed);
             }
             other => panic!("应为 exit 事件，实际: {other:?}"),
+        }
+    }
+
+    /// 启动时间必须能从 JSONL 原样复原：这是 F4 重关联判定 PID 复用的唯一依据。
+    #[test]
+    fn start_time_survives_json_round_trip() {
+        let event = sample_start();
+        let line = event.to_jsonl_line().expect("序列化失败");
+        assert!(
+            line.contains("\"start_time\":133000000000000000"),
+            "start 事件应包含原始 start_time: {line}"
+        );
+
+        match SessionEvent::from_jsonl_line(&line).expect("反序列化失败") {
+            SessionEvent::Start { start_time, pid, .. } => {
+                assert_eq!(start_time, 133_000_000_000_000_000);
+                assert_eq!(pid, 4242);
+            }
+            other => panic!("应为 start 事件，实际: {other:?}"),
+        }
+    }
+
+    /// 旧事件（M1a 产物）没有 start_time 字段，读取时应回落为 0 而不是解析失败。
+    #[test]
+    fn start_event_without_start_time_defaults_to_zero() {
+        let legacy = r#"{"event":"start","v":1,"ts":"2026-01-01T00:00:00Z","session_id":"e6b562fe-91e5-45f3-8a34-8c42e0be9cef","app_id":"demo","cmd":"cmd","cwd":"C:/","argv":["cmd"],"pid":10,"ppid":20}"#;
+        match SessionEvent::from_jsonl_line(legacy).expect("旧事件应可解析") {
+            SessionEvent::Start { start_time, .. } => assert_eq!(start_time, 0),
+            other => panic!("应为 start 事件，实际: {other:?}"),
         }
     }
 
