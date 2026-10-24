@@ -36,6 +36,9 @@ tokio = { version = "1", features = [
     "fs",
 ] }
 # Windows 平台 API（只用 windows-sys，不引入重型 windows crate）
+# - Win32_UI_WindowsAndMessaging：窗口标题采集（EnumWindows / GetWindowTextW）
+# - Win32_NetworkManagement_IpHelper：监听端口采集（GetExtendedTcpTable）
+# - Win32_Networking_WinSock：仅取 AF_INET / AF_INET6 常量（IpHelper 结构体本身无需该 feature）
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -44,6 +47,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
     "Win32_System_ProcessStatus",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
 ] }
 # 文本编码：Windows 中文环境的控制台/日志默认 cp936(GBK)，输出捕获需按平台编码无损解码
 encoding_rs = "0.8"

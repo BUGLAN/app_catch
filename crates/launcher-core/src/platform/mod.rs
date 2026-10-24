@@ -26,11 +26,25 @@ use crate::session::SessionId;
 
 #[cfg(not(windows))]
 pub mod fallback;
-/// Windows 实现直接调用 Win32 API，是本 crate 唯一允许 `unsafe` 的模块。
+/// Windows 实现直接调用 Win32 API，是本 crate 允许 `unsafe` 的模块之一。
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub mod windows;
 
+/// Windows 监听端口采集（GetExtendedTcpTable），尽力而为、失败静默。
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub mod ports;
+
+/// Windows 窗口标题采集（EnumWindows / GetWindowTextW），尽力而为、失败静默。
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub mod window;
+
+#[cfg(windows)]
+pub use ports::{listening_ports_for_pid, listening_ports_for_pids};
+#[cfg(windows)]
+pub use window::{window_title_for_pid, window_title_for_pids};
 #[cfg(windows)]
 pub use windows::{
     descendant_pids, is_process_alive, pid_exists_in_snapshot, WindowsIconCapture,
@@ -38,6 +52,32 @@ pub use windows::{
 };
 #[cfg(not(windows))]
 pub use fallback::{FallbackIconCapture, FallbackProcessBackend};
+
+/// 收集一个会话进程树的全部 pid（根 pid 在前，子孙在后）。
+///
+/// 状态采集的两个 probe 都需要「根 + 子孙」这个集合：
+/// GUI 应用常见「启动器拉起的是 shim，真正的窗口/端口属于它的子进程」。
+/// 非 Windows 平台没有进程树枚举能力，只返回根 pid 本身。
+#[cfg(windows)]
+pub fn collect_tree_pids(root_pid: u32) -> Vec<u32> {
+    if root_pid == 0 {
+        return Vec::new();
+    }
+    let mut pids = Vec::with_capacity(8);
+    pids.push(root_pid);
+    pids.extend(descendant_pids(root_pid));
+    pids
+}
+
+/// 非 Windows 平台：没有进程树枚举能力，只返回根 pid 本身。
+#[cfg(not(windows))]
+pub fn collect_tree_pids(root_pid: u32) -> Vec<u32> {
+    if root_pid == 0 {
+        Vec::new()
+    } else {
+        vec![root_pid]
+    }
+}
 
 /// 平台后端方法返回的装箱 future（保证 trait 对象安全）。
 pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
