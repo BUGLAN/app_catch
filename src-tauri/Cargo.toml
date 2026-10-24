@@ -20,3 +20,8 @@ tauri = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 launcher-core = { workspace = true }
+
+[dev-dependencies]
+# 命令层测试用临时目录隔离 APP_CATCH_HOME
+tempfile = { workspace = true }
+tokio = { workspace = true }

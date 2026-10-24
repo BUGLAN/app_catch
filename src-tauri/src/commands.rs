@@ -1,0 +1,342 @@
+//! Tauri 命令层：薄封装 launcher-core 的业务能力，并统一错误为中文结构化错误。
+//!
+//! 分层约定（M2 边界）：
+//! - 本模块**不做业务**：校验交给 dto.rs，进程/会话交给 launcher-core；
+//! - 每个命令只做三件事：解析入参 -> 调用核心 -> 转成 DTO；
+//! - 所有命令返回 Result<T, CommandError>，前端拿到的永远是 { kind, message }。
+//!
+//! 命令清单一览见 docs/GUI.md「命令层 API」。
+
+use std::sync::Arc;
+
+use tauri::State;
+
+use launcher_core::config::AppConfig;
+use launcher_core::runtime::{CaptureConfig, SessionManager};
+use launcher_core::session::SessionId;
+
+use crate::app_state::{parse_app_id, AppState};
+use crate::dto::{
+    AppConfigInput, BootReport, CaptureConfigDto, SessionSnapshotDto, WriterConfigDto,
+};
+use crate::error::CommandError;
+use crate::events_reader::{SessionEventsPage, DEFAULT_PAGE_LINES};
+
+/// 解析会话 id；失败时给出中文原因而不是 uuid 库的英文报错。
+pub fn parse_session_id(raw: &str) -> Result<SessionId, CommandError> {
+    raw.trim().parse::<SessionId>().map_err(|e| {
+        CommandError::new(
+            "invalid_id",
+            format!("会话 id 不合法（应为 uuid）：{}", trim_reason(&e.to_string())),
+        )
+    })
+}
+
+/// 去掉底层错误里重复的前缀，只保留原因部分，让文案保持简短。
+fn trim_reason(raw: &str) -> String {
+    match raw.split_once("): ") {
+        Some((_, rest)) => rest.to_string(),
+        None => raw.to_string(),
+    }
+}
+
+/// 取当前管理器与捕获配置。
+///
+/// 单独抽出来是为了让每个命令都拿到**同一时刻**的一致视图，
+/// 且不会把 RwLock 的读锁持有到 await 之后。
+fn current(state: &AppState) -> (Arc<SessionManager>, CaptureConfig) {
+    (state.manager(), state.capture_config())
+}
+
+// ---------------------------------------------------------------------------
+// 应用配置
+// ---------------------------------------------------------------------------
+
+/// 列出全部应用（按 id 升序）。
+#[tauri::command]
+pub fn list_apps(state: State<'_, AppState>) -> Result<Vec<AppConfig>, CommandError> {
+    state.store().list().map_err(CommandError::from)
+}
+
+/// 读取单个应用配置。
+#[tauri::command]
+pub fn get_app(state: State<'_, AppState>, id: String) -> Result<AppConfig, CommandError> {
+    state.get_app(&id)
+}
+
+/// 新建应用配置。
+#[tauri::command]
+pub fn create_app(
+    state: State<'_, AppState>,
+    config: AppConfigInput,
+) -> Result<AppConfig, CommandError> {
+    let config = config.into_config()?;
+    let store = state.store();
+    store.ensure_dir().map_err(CommandError::from)?;
+    store.create(config).map_err(CommandError::from)
+}
+
+/// 覆盖已有应用配置。
+#[tauri::command]
+pub fn update_app(
+    state: State<'_, AppState>,
+    config: AppConfigInput,
+) -> Result<AppConfig, CommandError> {
+    let config = config.into_config()?;
+    state.store().update(config).map_err(CommandError::from)
+}
+
+/// 删除应用配置。
+///
+/// 只删配置，**不碰**已有会话目录：历史日志属于审计材料，删配置不该连带抹掉。
+#[tauri::command]
+pub fn delete_app(state: State<'_, AppState>, id: String) -> Result<(), CommandError> {
+    let app_id = parse_app_id(&id)?;
+    state.store().delete(&app_id).map_err(CommandError::from)
+}
+
+// ---------------------------------------------------------------------------
+// 会话生命周期
+// ---------------------------------------------------------------------------
+
+/// 启动一个应用，返回新会话快照。
+#[tauri::command]
+pub async fn start_app(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<SessionSnapshotDto, CommandError> {
+    let app = state.get_app(&id)?;
+    let (manager, _) = current(&state);
+    let handle = manager.start(&app).await.map_err(CommandError::from)?;
+    Ok(SessionSnapshotDto::from(handle.snapshot))
+}
+
+/// 停止一个会话（回收整棵进程树）。
+#[tauri::command]
+pub async fn stop_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), CommandError> {
+    let session_id = parse_session_id(&session_id)?;
+    let (manager, _) = current(&state);
+    manager.stop(session_id).await.map_err(CommandError::from)
+}
+
+/// 重启：先停旧会话，再用同一份配置起一个新会话（新 session_id）。
+#[tauri::command]
+pub async fn restart_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    app_id: String,
+) -> Result<SessionSnapshotDto, CommandError> {
+    let session_id = parse_session_id(&session_id)?;
+    let app = state.get_app(&app_id)?;
+    let (manager, _) = current(&state);
+    let handle = manager
+        .restart(session_id, &app)
+        .await
+        .map_err(CommandError::from)?;
+    Ok(SessionSnapshotDto::from(handle.snapshot))
+}
+
+/// 列出仍在运行的会话（按 session_id 升序）。
+#[tauri::command]
+pub async fn list_active_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<SessionSnapshotDto>, CommandError> {
+    let (manager, _) = current(&state);
+    Ok(manager
+        .list_active()
+        .await
+        .into_iter()
+        .map(SessionSnapshotDto::from)
+        .collect())
+}
+
+/// 查询单个会话状态；未知会话返回 not_found。
+#[tauri::command]
+pub async fn get_session_status(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SessionSnapshotDto, CommandError> {
+    let session_id = parse_session_id(&session_id)?;
+    let (manager, _) = current(&state);
+    let snapshot = manager
+        .status(session_id)
+        .await
+        .map_err(CommandError::from)?;
+    Ok(SessionSnapshotDto::from(snapshot))
+}
+
+// ---------------------------------------------------------------------------
+// 会话事件读取
+// ---------------------------------------------------------------------------
+
+/// 从会话目录按分片顺序增量读取事件。
+///
+/// 边跑边读安全：末行未写完时不消费它，游标停在它之前（详见 events_reader.rs）。
+#[tauri::command]
+pub fn read_session_events(
+    state: State<'_, AppState>,
+    session_id: String,
+    from_line: u64,
+    max_lines: u64,
+) -> Result<SessionEventsPage, CommandError> {
+    let session_id = parse_session_id(&session_id)?;
+    let dir = launcher_core::paths::session_dir(&session_id).map_err(CommandError::from)?;
+    let limit = if max_lines == 0 {
+        DEFAULT_PAGE_LINES
+    } else {
+        max_lines
+    };
+    state.reader().read_page(&dir, from_line, limit)
+}
+
+// ---------------------------------------------------------------------------
+// 捕获配置与启动报告
+// ---------------------------------------------------------------------------
+
+/// 读取当前捕获配置。
+#[tauri::command]
+pub fn get_capture_config(state: State<'_, AppState>) -> Result<CaptureConfigDto, CommandError> {
+    Ok(CaptureConfigDto::from(state.capture_config()))
+}
+
+/// 写入捕获配置；有会话在跑时拒绝（重建管理器会丢掉会话表）。
+#[tauri::command]
+pub async fn set_capture_config(
+    state: State<'_, AppState>,
+    config: CaptureConfigDto,
+) -> Result<CaptureConfigDto, CommandError> {
+    let (manager, _) = current(&state);
+    let running = manager.list_active().await.len();
+    let mut capture = CaptureConfig::default();
+    capture.channel_capacity = config.channel_capacity;
+    capture.max_line_bytes = config.max_line_bytes;
+    capture.status_interval = config
+        .status_interval_ms
+        .map(std::time::Duration::from_millis);
+    capture.max_status_events = config.max_status_events;
+    capture.writer = writer_config_from(&config.writer);
+    state.replace_capture_config(capture, running)?;
+    Ok(CaptureConfigDto::from(state.capture_config()))
+}
+
+/// 把 DTO 还原成核心的日志写入配置。
+fn writer_config_from(dto: &WriterConfigDto) -> launcher_core::runtime::LogWriterConfig {
+    let mut config = launcher_core::runtime::LogWriterConfig::default();
+    // 0 视为「不覆盖」：界面没有暴露这些字段时不应把默认值抹成 0
+    if dto.max_file_bytes > 0 {
+        config.max_file_bytes = dto.max_file_bytes;
+    }
+    if dto.max_shards > 0 {
+        config.max_shards = dto.max_shards;
+    }
+    if dto.flush_every > 0 {
+        config.flush_every = dto.flush_every;
+    }
+    if dto.flush_interval_ms > 0 {
+        config.flush_interval = std::time::Duration::from_millis(dto.flush_interval_ms);
+    }
+    config
+}
+
+/// 启动期恢复：扫描残留会话并重新关联，返回一次性报告。
+///
+/// 前端在首屏调用它，把「重启前还在跑的会话」呈现出来。
+#[tauri::command]
+pub async fn recover_sessions(state: State<'_, AppState>) -> Result<BootReport, CommandError> {
+    let home = launcher_core::paths::app_catch_home()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (manager, _) = current(&state);
+    match manager.recover_sessions().await {
+        Ok(list) => Ok(BootReport {
+            home,
+            recovered: list.into_iter().map(SessionSnapshotDto::from).collect(),
+            error: None,
+        }),
+        // 恢复失败不让 GUI 起不来：报告里带原因，界面照常可用
+        Err(err) => Ok(BootReport {
+            home,
+            recovered: Vec::new(),
+            error: Some(CommandError::from(err).message),
+        }),
+    }
+}
+
+/// 返回 launcher-core 的版本号（M0 打通链路用，保留以兼容既有前端）。
+#[tauri::command]
+pub fn core_version() -> String {
+    launcher_core::version().to_string()
+}
+
+/// 返回应用自身版本号。
+#[tauri::command]
+pub fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_session_id_parses() {
+        let id = SessionId::new_v4();
+        let parsed = parse_session_id(&id.to_string()).expect("合法 uuid 应解析成功");
+        assert_eq!(parsed, id);
+        // 前后空白应被容忍（前端偶尔带空格）
+        let padded = format!("  {id}  ");
+        assert_eq!(parse_session_id(&padded).expect("应容忍空白"), id);
+    }
+
+    #[test]
+    fn invalid_session_id_reports_chinese_message() {
+        let err = parse_session_id("not-a-uuid").expect_err("非法 uuid 应失败");
+        assert_eq!(err.kind, "invalid_id");
+        assert!(err.message.contains("会话 id 不合法"), "文案: {}", err.message);
+        assert!(
+            !err.message.contains("InvalidId"),
+            "不应把底层调试名透给用户: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn writer_config_from_ignores_zero_fields() {
+        let defaults = launcher_core::runtime::LogWriterConfig::default();
+        let zeroed = WriterConfigDto {
+            max_file_bytes: 0,
+            max_shards: 0,
+            flush_every: 0,
+            flush_interval_ms: 0,
+        };
+        let config = writer_config_from(&zeroed);
+        assert_eq!(config.max_file_bytes, defaults.max_file_bytes, "0 不应覆盖默认值");
+        assert_eq!(config.max_shards, defaults.max_shards);
+        assert_eq!(config.flush_every, defaults.flush_every);
+        assert_eq!(config.flush_interval, defaults.flush_interval);
+    }
+
+    #[test]
+    fn writer_config_from_applies_explicit_values() {
+        let dto = WriterConfigDto {
+            max_file_bytes: 1024,
+            max_shards: 2,
+            flush_every: 8,
+            flush_interval_ms: 50,
+        };
+        let config = writer_config_from(&dto);
+        assert_eq!(config.max_file_bytes, 1024);
+        assert_eq!(config.max_shards, 2);
+        assert_eq!(config.flush_every, 8);
+        assert_eq!(config.flush_interval, std::time::Duration::from_millis(50));
+    }
+
+    #[test]
+    fn versions_are_exposed_for_legacy_frontend() {
+        assert_eq!(core_version(), launcher_core::version());
+        assert_eq!(app_version(), env!("CARGO_PKG_VERSION"));
+    }
+}
