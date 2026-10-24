@@ -28,3 +28,7 @@ Thumbs.db
 .pnpm-store/
 npm-debug.log*
 pnpm-debug.log*
+
+# 端到端验收产物（隔离的 APP_CATCH_HOME、安装目录、日志）：
+# 这些是 M5 验收时现场生成的证据，会被反复重建，不纳入版本库。
+.e2e/
