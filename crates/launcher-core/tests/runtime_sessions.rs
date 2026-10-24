@@ -618,6 +618,120 @@ async fn rotation_creates_shards_with_intact_lines_and_retention() {
     }
 }
 
+// ============================ g) 单 writer 所有权 ============================
+
+/// 缺陷回归：状态循环**不得**自己开 `LogWriter`。
+///
+/// 修复前的写法是「每条 status 事件新开一个 writer」。每个 `LogWriter` 都自带
+/// `shard_seq` 与「已轮转分片」这两个内存状态，于是：
+/// - 序号从 0 重新起算 → 分片名乱跳（实测出现过 `[1, 28, 29]`）；
+/// - prune 只看自己那份不完整的列表 → **旧分片永远删不掉**，长跑服务撑爆磁盘。
+///
+/// 这条用例把轮转压到极小、把状态采集压到极快，逼出「状态事件与输出事件交错轮转」
+/// 的场景，然后断言两条不变量：
+/// 1. 磁盘上的分片数不超过 `max_shards`（保留策略对**全部分片**生效）；
+/// 2. 分片序号从 1 开始**连续不断档**——多 writer 竞争时必然出现空洞。
+#[tokio::test]
+async fn status_events_share_one_writer_with_output() {
+    let env = TestEnv::new();
+    let mut capture = CaptureConfig::default();
+    // 1KB 一片 + 只留 3 片：少量输出就能触发多轮轮转
+    capture.writer = LogWriterConfig {
+        max_file_bytes: 1024,
+        max_shards: 3,
+        ..LogWriterConfig::default()
+    };
+    // 10ms 采一次：状态事件会密集插进输出流里
+    capture.status_interval = Some(Duration::from_millis(10));
+    capture.max_status_events = None;
+    let manager = env.manager(capture).with_status_probe(Arc::new(CountingProbe));
+
+    let app = cmd_app(&[
+        "/c",
+        "(for /L %i in (1,1,600) do @echo SW_LINE_%i_PADDING_PADDING_PADDING)",
+    ]);
+    let session = manager.start(&app).await.expect("启动失败");
+    manager
+        .wait_for_exit(session.session_id, Duration::from_secs(120))
+        .await
+        .expect("等待退出失败");
+
+    let dir = manager.session_dir(&session.session_id);
+    let mut shards: Vec<u32> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("读目录失败").flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(rest) = name.strip_prefix("events.") {
+            if let Some(seq) = rest.strip_suffix(".jsonl") {
+                if let Ok(seq) = seq.parse::<u32>() {
+                    shards.push(seq);
+                }
+            }
+        }
+    }
+    shards.sort_unstable();
+
+    // 不变量 1：保留策略对全部分片生效
+    assert!(
+        shards.len() <= 3,
+        "保留上限 max_shards=3 应生效，实际分片: {shards:?}"
+    );
+
+    // 不变量 2：序号从 1 起连续单调递增（分片被 prune 掉的是**最旧**的，
+    // 因此磁盘上留下的必然是一段连续的尾部区间）
+    if let Some(&first) = shards.first() {
+        for (offset, seq) in shards.iter().enumerate() {
+            assert_eq!(
+                *seq,
+                first + offset as u32,
+                "分片序号必须连续无空洞（多 writer 竞争会打出空洞），实际: {shards:?}"
+            );
+        }
+    }
+
+    // 不变量 3：保留策略只删**最旧**的分片，因此留下的尾部里 exit 必须还在最后一位。
+    // 注意这里不能断言「首条是 start」——轮转 + 保留本来就是要把最早的 start 丢掉，
+    // 这正是保留策略在起作用的证据（全量事件的可读性由 SESSION_FORMAT 的读取约定保证）。
+    let events = read_all_events(&dir);
+    assert!(
+        matches!(events.last(), Some(SessionEvent::Exit { .. })),
+        "末条必须是 exit，实际: {:?}",
+        events.last()
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, SessionEvent::Output { .. })),
+        "保留下来的分片里应仍有 output 事件"
+    );
+    println!(
+        "分片序号 {:?}（连续无空洞），保留事件 {} 条，末条 exit",
+        shards,
+        events.len()
+    );
+}
+
+/// 测试用固定值 probe：只填窗口标题，不需要进程树枚举。
+struct CountingProbe;
+
+impl launcher_core::runtime::StatusProbe for CountingProbe {
+    fn probe(
+        &self,
+        _ctx: &launcher_core::runtime::ProbeContext,
+    ) -> launcher_core::runtime::StatusSnapshot {
+        launcher_core::runtime::StatusSnapshot {
+            window_title: Some("单 writer 用例".to_string()),
+            ports: Vec::new(),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "counting"
+    }
+
+    /// 不枚举整机进程表：这条用例只关心写盘路径，不应该被 ToolHelp 快照拖慢
+    fn needs_process_tree(&self) -> bool {
+        false
+    }
+}
+
 // ============================ i) 事件流自洽 ============================
 
 #[tokio::test]

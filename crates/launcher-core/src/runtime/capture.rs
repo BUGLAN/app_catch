@@ -1,17 +1,28 @@
-//! 输出捕获管线：子进程 stdout/stderr -> 有界 channel -> 串行写盘。
+//! 会话日志的唯一写盘任务：所有事件 -> 有界 channel -> 串行写盘。
 //!
-//! 结构（每个输出流一条流水线，两条流汇入同一个 writer）：
+//! 结构（每个输出流一条读者流水线，全部事件汇入**同一个**写入任务）：
 //!
 //! ```text
 //! 子进程 stdout --reader task--+
-//!                              +--> mpsc(capacity) --> writer task --> events.jsonl
-//! 子进程 stderr --reader task--+
+//!                              |
+//! 子进程 stderr --reader task--+--> mpsc(capacity) --> writer task --> events.jsonl
+//!                              |
+//! 状态循环 --Status------------+
+//! 退出收尾 --Finish(exit)------+（写完 exit 即关闭文件并结束任务）
 //! ```
+//!
+//! **单 writer 所有权**（这是硬约束，不是建议）：
+//! 一个会话目录下同一时刻**只能有一个 LogWriter**。原因在于 `LogWriter` 把 `shard_seq`
+//! 与已轮转分片列表保存在自己的内存里——多开一个 writer 就等于多一份「自己以为的分片现状」，
+//! 序号会从 0 重新起算、保留策略会按不完整的列表删分片，结果旧分片永远删不掉、序号乱跳，
+//! 长跑服务最终撑爆磁盘。因此除本模块的写入任务外，**任何地方都不得再 `LogWriter::open`
+//! 同一个会话目录**；状态事件与 exit 事件都必须经 [`CaptureSink`] 排到同一条写入路径上。
 //!
 //! 三条不可让步的性质：
 //!
-//! 1. **绝不阻塞子进程**：channel 满时用 try_send，失败只累计丢弃计数并继续读管道。
+//! 1. **绝不阻塞子进程**：输出行用 try_send，通道满时只累计丢弃计数并继续读管道。
 //!    若改成 await send，子进程会因写满管道而卡死，等于用日志把应用冻住。
+//!    （状态/退出事件数量极少，用 await send 换「绝不丢」，见 [`CaptureEvent`]。）
 //! 2. **绝不静默丢行**：丢弃计数会以 overflow 事件写进 JSONL，读者能明确知道数据不完整。
 //! 3. **不因非法 UTF-8 丢行**：用 read_until(b'\n') 读原始字节再 from_utf8_lossy，
 //!    而不是 lines()（后者遇到非法 UTF-8 会直接返回错误并丢掉整行）。
@@ -19,9 +30,10 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{AppCatchError, Result};
 use crate::runtime::log_writer::{LogWriter, LogWriterConfig};
@@ -33,6 +45,16 @@ pub const DEFAULT_CHANNEL_CAPACITY: usize = 8192;
 /// 单行最大字节数：超过就强制切断，避免超长行把内存吃穿。
 pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+/// 默认的状态采集间隔：3 秒。
+pub const DEFAULT_STATUS_INTERVAL: Duration = Duration::from_secs(3);
+
+/// 默认的 status 事件速率上限：每分钟最多 12 条。
+///
+/// 正常情况远达不到：`status` 事件只在「状态真的变了」时写，
+/// 一个来回切窗口的应用一分钟也就十几条。这个上限是异常保护——
+/// 比如某个进程疯狂重绑端口，不能让日志被刷爆。
+pub const DEFAULT_MAX_STATUS_EVENTS_PER_MINUTE: u32 = 12;
+
 /// 捕获管线配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureConfig {
@@ -42,6 +64,17 @@ pub struct CaptureConfig {
     pub writer: LogWriterConfig,
     /// 单行最大字节数，超出后强制切断为多条 output 事件。
     pub max_line_bytes: usize,
+    /// 状态采集间隔；`None` 表示**禁用**状态采集循环（不写任何 status 事件）。
+    ///
+    /// 采集在 `spawn_blocking` 中执行，不占用 tokio worker；
+    /// 只有状态真的变化时才追加 `status` 事件，详见 `runtime::status` 与 docs/RUNTIME.md。
+    pub status_interval: Option<Duration>,
+    /// 每分钟最多写多少条 `status` 事件；`None` 表示不限制。
+    ///
+    /// 规则：按滑动 60 秒窗口计数。达到上限后，该窗口内**状态变化不再写事件，
+    /// 但仍会更新 `SessionSnapshot::latest_status`**——GUI 读到的快照始终是最新值，
+    /// 只是日志被限流。
+    pub max_status_events: Option<u32>,
 }
 
 impl Default for CaptureConfig {
@@ -50,7 +83,16 @@ impl Default for CaptureConfig {
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
             writer: LogWriterConfig::default(),
             max_line_bytes: MAX_LINE_BYTES,
+            status_interval: Some(DEFAULT_STATUS_INTERVAL),
+            max_status_events: Some(DEFAULT_MAX_STATUS_EVENTS_PER_MINUTE),
         }
+    }
+}
+
+impl CaptureConfig {
+    /// 状态采集是否启用（间隔为 `None` 或零时禁用）。
+    pub fn status_enabled(&self) -> bool {
+        matches!(self.status_interval, Some(interval) if !interval.is_zero())
     }
 }
 
@@ -229,81 +271,216 @@ where
     on_line(text, encoding);
 }
 
-/// 捕获管线：持有两条输出流的读取任务与唯一的写盘任务。
+/// 写入任务能处理的几类事件。
 ///
-/// 生命周期：[`CapturePipeline::finish`] 等待 reader 读完、writer 写完并 flush，
-/// 返回统计信息；所有 JoinHandle 都在那里被 join，不会泄漏。
+/// 把「内容」与「终止」放进同一个枚举，是为了让 **exit 一定是最后一条事件**：
+/// 处理 `Finish` 之后写入任务立刻关闭文件并退出，之后再没有任何代码能往这个会话追加。
+#[derive(Debug)]
+enum CaptureEvent {
+    /// 普通事件（output / overflow / status），按到达顺序落盘。
+    Write {
+        /// 要落盘的事件。
+        event: SessionEvent,
+        /// 可选回执：写入方可以借此等到「确实落盘」再继续（见 `CaptureSink::write`）。
+        ack: Option<oneshot::Sender<()>>,
+    },
+    /// 收尾事件：写完它（可为 `None`，即只关闭不写内容）就结束写盘任务。
+    Finish(Option<SessionEvent>),
+}
+
+/// 写盘权柄：整个会话唯一的日志写入入口。
+///
+/// 谁持有它谁就能往会话日志追加事件，但它只克隆 `Sender`，
+/// 真正的 `LogWriter` 始终只存在于写盘任务内部——这就是「单 writer 所有权」的落地方式。
+///
+/// 两类发送语义：
+/// - [`CaptureSink::try_write`]：**非阻塞**，给输出流用（通道满宁可丢并记账，也不阻塞子进程）；
+/// - [`CaptureSink::write`] / [`CaptureSink::finish`]：**背压等待**，给状态与退出收尾用
+///   （这些事件数量极少，丢掉才是真的丢信息）。
+#[derive(Debug, Clone)]
+pub struct CaptureSink {
+    sender: mpsc::Sender<CaptureEvent>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl CaptureSink {
+    /// 非阻塞写入：通道满或已关闭时只累计丢弃计数，返回是否成功入队。
+    ///
+    /// 输出流专用。**绝不能**改成 `await`——子进程会因为写满管道而卡死。
+    pub fn try_write(&self, event: SessionEvent) -> bool {
+        match self.sender.try_send(CaptureEvent::Write { event, ack: None }) {
+            Ok(()) => true,
+            // 通道满 / 写盘任务已结束：计入丢弃，由 overflow 事件如实反映
+            Err(_) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+    }
+
+    /// 背压 + **落盘确认**写入：仅用于状态事件等极少量控制事件。
+    ///
+    /// 与 [`CaptureSink::try_write`] 的区别有两个，都是刻意的：
+    /// - 用 `send` 而不是 `try_send`：这些事件量极小，宁可等一下也不能丢；
+    /// - 带 `oneshot` 回执：写盘任务写完并 flush 后才返回，
+    ///   因此「`write` 返回 true」等价于「此刻打开日志文件就能读到这条事件」。
+    ///   重关联补写 status(running)、退出写 exit 都依赖这一点。
+    ///
+    /// 返回 `false` 表示写盘任务已经结束（会话正在收尾），事件没有落盘。
+    pub async fn write(&self, event: SessionEvent) -> bool {
+        let (ack, done) = oneshot::channel();
+        if self
+            .sender
+            .send(CaptureEvent::Write {
+                event,
+                ack: Some(ack),
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        // 写盘任务已退出时会 drop 掉 ack，此时 recv 报错——同样算「没写成」
+        done.await.is_ok()
+    }
+
+    /// 写入收尾事件，并让写盘任务关闭文件、退出循环。
+    ///
+    /// 这是会话日志的**唯一**收尾入口：调用之后（通道排空后）不会再有事件落盘，
+    /// 因此 `exit` 必然位于事件流末尾。
+    ///
+    /// 返回 `false` 表示写盘任务早已结束（例如输出读取阶段就出错），收尾事件未落盘。
+    pub async fn finish(&self, last_event: Option<SessionEvent>) -> bool {
+        self.sender
+            .send(CaptureEvent::Finish(last_event))
+            .await
+            .is_ok()
+    }
+
+    /// 构造一个「已经死掉」的写盘权柄：通道接收端已关闭，任何写入都会失败。
+    ///
+    /// 供不需要再写日志的会话记录占位（例如重关联判定为已崩溃的会话），
+    /// 避免为了一个字段去伪造一条完整的捕获管线。
+    pub fn dead() -> Self {
+        let (sender, receiver) = mpsc::channel(1);
+        // 接收端立刻关闭：此后任何 send 都会失败，不会凭空创建日志文件
+        drop(receiver);
+        Self {
+            sender,
+            dropped: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// 累计丢弃行数（实时值）。
+    pub fn dropped_lines(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+/// 捕获管线：持有两条输出流的读取任务、写盘权柄与唯一的写盘任务。
+///
+/// 生命周期：[`CapturePipeline::finish`] 先等 reader 读完（通道随之自然关闭），
+/// 再等写盘任务写完并 flush，返回统计信息；所有 JoinHandle 都在那里被 join，不会泄漏。
 pub struct CapturePipeline {
     stdout_task: Option<tokio::task::JoinHandle<Result<u64>>>,
     stderr_task: Option<tokio::task::JoinHandle<Result<u64>>>,
     writer_task: Option<tokio::task::JoinHandle<Result<u64>>>,
     dropped: Arc<AtomicU64>,
+    sink: CaptureSink,
 }
 
 impl CapturePipeline {
     /// 为一路输出启动「reader -> channel」。
     ///
     /// 通道满或接收端已关闭时只累计丢弃计数，绝不阻塞子进程。
-    pub fn spawn_reader<R>(
+    fn spawn_reader<R>(
         stream: StreamKind,
         reader: R,
-        sender: mpsc::Sender<SessionEvent>,
+        sender: mpsc::Sender<CaptureEvent>,
         dropped: Arc<AtomicU64>,
         config: CaptureConfig,
     ) -> tokio::task::JoinHandle<Result<u64>>
     where
         R: AsyncRead + Unpin + Send + 'static,
     {
+        let sink = CaptureSink {
+            sender,
+            dropped: Arc::clone(&dropped),
+        };
         tokio::spawn(async move {
             let max_line = config.max_line_bytes;
             read_lines(reader, max_line, |text, encoding| {
-                let event = SessionEvent::output_with_encoding(stream, text, encoding);
-                match sender.try_send(event) {
-                    Ok(()) => {}
-                    // 通道满：累计丢弃并继续读。若这里 await，子进程会被写满的管道卡死。
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        dropped.fetch_add(1, Ordering::Relaxed);
-                    }
-                    // 接收端已关闭（会话正在收尾）：同样计入丢弃
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        dropped.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
+                // 非阻塞发送：通道满时只记账，绝不卡住子进程
+                sink.try_write(SessionEvent::output_with_encoding(stream, text, encoding));
             })
             .await
         })
     }
 
-    /// 启动写盘任务：从 channel 取事件，串行写入 LogWriter，并补写 overflow 事件。
-    pub fn spawn_writer(
+    /// 启动唯一的写盘任务：从通道取事件，串行写入 LogWriter，并补写 overflow 事件。
+    ///
+    /// 退出条件只有两个：收到 [`CaptureEvent::Finish`]，或全部 `Sender` 被 drop（通道关闭）。
+    /// 两条路径都会 flush + close，不存在「writer 还开着但没人管」的状态。
+    fn spawn_writer(
         mut writer: LogWriter,
-        mut receiver: mpsc::Receiver<SessionEvent>,
+        mut receiver: mpsc::Receiver<CaptureEvent>,
         dropped: Arc<AtomicU64>,
     ) -> tokio::task::JoinHandle<Result<u64>> {
         tokio::spawn(async move {
             let mut written = 0u64;
             let mut reported = 0u64;
 
-            while let Some(event) = receiver.recv().await {
-                writer.write_event(&event).await?;
-                written += 1;
-
-                // 期间发生过丢弃就补写 overflow 事件，读者能明确知道数据不完整
+            // 把「截至此刻」的丢弃计数补写成 overflow 事件；返回写了多少条
+            async fn report_overflow(
+                writer: &mut LogWriter,
+                dropped: &AtomicU64,
+                reported: &mut u64,
+            ) -> Result<u64> {
                 let current = dropped.load(Ordering::Relaxed);
-                if current > reported {
-                    writer.write_event(&SessionEvent::overflow(current - reported)).await?;
-                    written += 1;
-                    reported = current;
+                if current <= *reported {
+                    return Ok(0);
+                }
+                writer
+                    .write_event(&SessionEvent::overflow(current - *reported))
+                    .await?;
+                *reported = current;
+                Ok(1)
+            }
+
+            loop {
+                let Some(item) = receiver.recv().await else {
+                    // 通道关闭（所有 Sender 已 drop）：补记最后一段丢弃后收尾
+                    written += report_overflow(&mut writer, &dropped, &mut reported).await?;
+                    break;
+                };
+
+                match item {
+                    CaptureEvent::Write { event, ack } => {
+                        writer.write_event(&event).await?;
+                        written += 1;
+                        // 期间发生过丢弃就补写 overflow 事件，读者能明确知道数据不完整
+                        written += report_overflow(&mut writer, &dropped, &mut reported).await?;
+
+                        // 带 ack 的写入必须「确实落盘」后才回执，调用方据此获得可见性保证
+                        if let Some(ack) = ack {
+                            writer.flush().await?;
+                            // 接收端已丢弃（调用方不再等）也无所谓：事件已经写进日志了
+                            let _ = ack.send(());
+                        }
+                    }
+                    CaptureEvent::Finish(last) => {
+                        // 顺序不可换：先补 overflow，再写 exit —— exit 必须是最后一条
+                        written += report_overflow(&mut writer, &dropped, &mut reported).await?;
+                        if let Some(event) = last {
+                            writer.write_event(&event).await?;
+                            written += 1;
+                        }
+                        break;
+                    }
                 }
             }
 
-            // channel 关闭后再补一次，确保最后一段丢弃也被记录
-            let current = dropped.load(Ordering::Relaxed);
-            if current > reported {
-                writer.write_event(&SessionEvent::overflow(current - reported)).await?;
-                written += 1;
-            }
-
+            // 无论从哪条路径退出，都必须 flush + sync + close
             writer.close().await?;
             Ok(written)
         })
@@ -317,13 +494,18 @@ impl CapturePipeline {
         config: CaptureConfig,
     ) -> CapturePipeline {
         let capacity = config.channel_capacity.max(1);
-        let (sender, receiver) = mpsc::channel::<SessionEvent>(capacity);
+        let (sender, receiver) = mpsc::channel::<CaptureEvent>(capacity);
         let dropped = Arc::new(AtomicU64::new(0));
 
         let writer_task = Self::spawn_writer(writer, receiver, Arc::clone(&dropped));
 
-        // sender 的两份克隆分别交给两个读任务，任务结束后自动 drop，channel 随之关闭，
-        // writer 读到 None 即收尾 —— 这是整条管线唯一的退出路径。
+        // sink 保留一份在管线里（交给状态循环与退出收尾）；
+        // 其余克隆交给读任务，全部 drop 后通道关闭，写盘任务自然收尾。
+        let sink = CaptureSink {
+            sender: sender.clone(),
+            dropped: Arc::clone(&dropped),
+        };
+
         let stdout_task = stdout.map(|reader| {
             Self::spawn_reader(
                 StreamKind::Stdout,
@@ -342,7 +524,13 @@ impl CapturePipeline {
             stderr_task,
             writer_task: Some(writer_task),
             dropped,
+            sink,
         }
+    }
+
+    /// 写盘权柄的克隆：状态循环、退出收尾都用它写事件，**不得**自己开 `LogWriter`。
+    pub fn sink(&self) -> CaptureSink {
+        self.sink.clone()
     }
 
     /// 累计丢弃行数（实时值）。
@@ -350,10 +538,23 @@ impl CapturePipeline {
         self.dropped.load(Ordering::Relaxed)
     }
 
-    /// 等待读取任务结束（两条流都 EOF），再等 writer 写完并 flush。
+    /// 等待读取任务结束（两条流都 EOF），再等写盘任务写完并 flush。
     ///
     /// 所有 JoinHandle 都在这里被 join，不会泄漏。
-    pub async fn finish(mut self) -> Result<CaptureSummary> {
+    pub async fn finish(self) -> Result<CaptureSummary> {
+        self.close_with(None).await
+    }
+
+    /// 收尾：读完输出 -> 把 `last_event` 排到队尾 -> 关闭文件 -> 等写盘任务退出。
+    ///
+    /// 这是「让 exit 成为日志最后一条」的唯一正确做法：
+    /// 1. 先等两条 reader 结束——此刻起不会再有 `output` 进入通道；
+    /// 2. 再发 [`CaptureEvent::Finish`]——它排在队列里所有已入队事件之后；
+    /// 3. 写盘任务处理完 `Finish`（含补写 overflow、写 exit）立刻 close 并退出，
+    ///    之后任何 `sink.write` 都会失败，物理上不可能再追加事件。
+    ///
+    /// 无输出管道的会话（重关联接管）同样走这里：reader 为 `None`，直接进入第 2 步。
+    pub async fn close_with(mut self, last_event: Option<SessionEvent>) -> Result<CaptureSummary> {
         let mut stdout_lines = 0u64;
         let mut stderr_lines = 0u64;
 
@@ -363,6 +564,11 @@ impl CapturePipeline {
         if let Some(task) = self.stderr_task.take() {
             stderr_lines = join_reader(task, "stderr").await?;
         }
+
+        // reader 全部结束后，剩下的 Sender 只有 self.sink：先发收尾事件，
+        // 再 drop 自己，保证写盘任务不会等一个永远不会到来的事件。
+        let _ = self.sink.finish(last_event).await;
+        drop(self.sink);
 
         let written_events = match self.writer_task.take() {
             Some(task) => join_reader(task, "writer").await?,
@@ -564,6 +770,9 @@ mod tests {
             channel_capacity: 1024,
             writer: fast_writer_config(),
             max_line_bytes: MAX_LINE_BYTES,
+            // 这几条测试只验证捕获管线本身，不启动状态采集循环
+            status_interval: None,
+            max_status_events: None,
         };
         let pipeline = CapturePipeline::start(
             Some(Box::new(std::io::Cursor::new(input))),
@@ -589,7 +798,7 @@ mod tests {
     #[tokio::test]
     async fn overflow_is_recorded_when_channel_is_full() {
         let dropped = Arc::new(AtomicU64::new(0));
-        let (sender, receiver) = mpsc::channel::<SessionEvent>(1);
+        let (sender, receiver) = mpsc::channel::<CaptureEvent>(1);
 
         // reader 侧：容量 1，writer 尚未消费，因此绝大多数行会被丢弃
         let mut input: Vec<u8> = Vec::new();
@@ -601,6 +810,9 @@ mod tests {
             channel_capacity: 1,
             writer: fast_writer_config(),
             max_line_bytes: MAX_LINE_BYTES,
+            // 这几条测试只验证捕获管线本身，不启动状态采集循环
+            status_interval: None,
+            max_status_events: None,
         };
         let reader_task = CapturePipeline::spawn_reader(
             StreamKind::Stdout,
@@ -655,6 +867,9 @@ mod tests {
             channel_capacity: 256,
             writer: fast_writer_config(),
             max_line_bytes: MAX_LINE_BYTES,
+            // 这几条测试只验证捕获管线本身，不启动状态采集循环
+            status_interval: None,
+            max_status_events: None,
         };
         let pipeline = CapturePipeline::start(
             Some(Box::new(std::io::Cursor::new(b"out-1\nout-2\n".to_vec()))),
