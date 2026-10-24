@@ -21,6 +21,29 @@ pnpm tauri build
 
 构建耗时：全量首次约 1m37s（含依赖编译与 WiX/NSIS 工具链下载缓存），增量重新打包约 27s。
 
+### 两个安装包都验证过产物内容
+
+只「文件存在且大小合理」不足以说明安装包可用，因此两个产物都做了内容级验证：
+
+**NSIS**：静默安装到隔离目录，装出的文件与构建产物同源：
+
+```text
+.e2e/install/app-catch.exe   11036672 bytes
+.e2e/install/uninstall.exe      81691 bytes
+```
+
+**MSI**：7-Zip 可以把它当复合文档打开，抽出内嵌的 `app.cab`，再解出主程序：
+
+```text
+Path = app.cab   Size = 3462424   Type = Cab (MSZip)
+Path = Path      Size = 11036672  (MZ 头，PE 偏移 0x3D8)
+```
+
+把这份解出来的主程序直接运行（`APP_CATCH_HOME` 指向隔离目录），窗口正常出现
+（`MainWindowTitle = app_catch`），并按预期创建出 `apps/`、`icons/`、`sessions/`。
+sha256 与 `target/release/app-catch.exe` 不同是正常的：Tauri 会按打包类型给 exe
+**打补丁**（`Patching … with bundle type information: msi`），MSI 内的副本带 msi 标记。
+
 ### 为什么 `targets` 是显式清单
 
 配置从 `"all"` 改为 `["nsis", "msi"]`：
@@ -214,7 +237,8 @@ node scripts/session-replay.mjs <session_dir>
 
 1. **安装版 CDP 需要环境变量**：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 是 WebView2 运行时的开关，
    不是产品功能。它只用于自动化验收，正常使用时不需要设置，也不会默认开启（默认不开调试端口）。
-2. **MSI 未做静默安装验证**：本机未安装 WiX 之外的企业分发依赖，MSI 只验证了产物生成与体积；
+2. **MSI 未做 `msiexec` 安装验证**：MSI 验证到「内嵌 cab 可解出主程序，且该程序能正常启动并创建目录布局」，
+   没有执行真正的 `msiexec /i` 安装（本会话审批禁用，且安装会在系统里登记卸载项，不适合验收脚本反复跑）。
    NSIS 走了完整的静默安装 → 启动 → 驱动 → 停止链路。
 3. **Store 应用型 exe 的窗口抓取**：如 notepad.exe 这类「Stub 转发到包」的程序，
    启动器进程会先退出，窗口属于另一个进程，会话里采不到窗口标题（详见 2.2 的说明）。
