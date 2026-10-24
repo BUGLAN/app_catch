@@ -10,3 +10,9 @@ description = "app_catch 核心逻辑：配置、进程管理、会话 JSONL、�
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

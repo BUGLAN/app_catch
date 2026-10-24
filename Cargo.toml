@@ -15,5 +15,13 @@ description = "app_catch: developer-oriented desktop app launcher (M0 skeleton)"
 launcher-core = { path = "crates/launcher-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 配置存储：每应用一个 TOML 文件
+toml = "1"
+# 错误类型统一用 thiserror 派生
+thiserror = "2"
+# 跨平台用户主目录
+dirs = "7"
+# 仅测试用：临时目录隔离 APP_CATCH_HOME
+tempfile = "3"
 tauri = { version = "2" }
 tauri-build = { version = "2" }

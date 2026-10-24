@@ -3,7 +3,17 @@
 //! 设计约束（来自需求基线「launcher-core 不依赖 UI，可独立测试」）：
 //! - 本 crate 不得依赖 tauri 或任何 GUI 库，保证能在无窗口环境下跑单元测试；
 //! - 配置管理、进程生命周期、会话 JSONL、图标捕获等能力从 M1 起逐步落地；
-//! - 当前处于 M0，仅提供可被 Tauri 命令层调用的占位 API。
+//! - M1a 先落地路径布局与配置 TOML 存储，会话事件模型与平台抽象随后补齐。
+
+#![forbid(unsafe_code)]
+
+pub mod config;
+pub mod error;
+pub mod fsutil;
+pub mod paths;
+
+pub use config::{AppConfig, AppId, AppStore};
+pub use error::{AppCatchError, Result};
 
 /// 返回本 crate 的版本号（取自 Cargo 包元数据）。
 ///

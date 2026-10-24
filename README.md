@@ -2,7 +2,7 @@
 
 开发者向的桌面应用启动器：把 E:\repo 下的自开发应用收进可管理列表，一键启动，并把每个会话的进程信息、运行状态与 stdout/stderr 全量捕获为结构化 JSONL，供 AI agent 直接读取。
 
-> 当前进度：**M0 仓库初始化与脚手架**。核心业务功能尚未实现，界面仅用于验证前后端链路。
+> 当前进度：**M1 数据层（M1a）进行中**。已完成路径布局与应用配置 TOML 存储；会话事件模型与平台抽象接口、进程运行时逻辑随后补齐。界面仍是 M0 的状态页。
 
 ## 目录架构
 
@@ -12,6 +12,7 @@
 | `src-tauri/` | Tauri 2 壳层：`src/lib.rs` 为 command 薄封装层，业务一律委托给 launcher-core；`tauri.conf.json` 为 v2 schema 配置；`capabilities/` 为权限声明。 |
 | `src/` | 前端（React + TypeScript + Vite）：M0 只有一个状态页，通过 `invoke` 调用 Tauri command 展示 launcher-core 版本号。 |
 | `docs/REQUIREMENTS.md` | 需求与决策基线（与仓库根 `PROMPT.md` 内容完全一致）。 |
+| `docs/CONFIG.md` | 应用配置 TOML 格式：字段表、默认值、存储位置、错误语义。 |
 | `Cargo.toml` | cargo workspace 根，成员为 `crates/launcher-core` 与 `src-tauri`，公共依赖集中在 `[workspace.dependencies]`。 |
 
 ## 前置依赖
@@ -48,11 +49,21 @@ pnpm tauri build
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
 | M0 | 仓库初始化：cargo workspace + Tauri 2 脚手架，cargo check/test 全绿，需求基线入库，README 写清构建方式 | ✅ 已完成 |
-| M1 | launcher-core（Windows 先行）：F1 配置、F2 启动、F3 捕获 + JSONL + 轮转、F4 停止与进程树回收 | ⏳ 待做 |
+| M1 | launcher-core（Windows 先行）：F1 配置、F2 启动、F3 捕获 + JSONL + 轮转、F4 停止与进程树回收 | 🚧 进行中（数据层完成） |
 | M2 | GUI：应用列表（图标/名称/状态）、启动/停止/重启、会话详情（实时日志流、状态、退出信息） | ⏳ 待做 |
 | M3 | 图标：Windows 抓取 + 缓存 + 兜底 | ⏳ 待做 |
 | M4 | macOS 对齐：构建通过、进程组语义、图标抓取 | ⏳ 待做 |
 | M5 | 打包与端到端验收：用真实项目（Python 服务 + GUI 应用）走完整流程 | ⏳ 待做 |
+
+## launcher-core 模块一览（M1a 数据层）
+
+| 模块 | 内容 | 文档 |
+| --- | --- | --- |
+| `config` | `AppId` / `AppConfig` / `AppStore`：每应用一个 TOML，原子写盘 | [docs/CONFIG.md](docs/CONFIG.md) |
+| `paths` | `APP_CATCH_HOME` 优先的目录布局（apps / sessions / icons） | [docs/CONFIG.md](docs/CONFIG.md) |
+| `error` / `fsutil` | 统一错误类型 `AppCatchError` 与原子写盘工具 | 见源码 rustdoc |
+
+> 数据隔离：所有测试通过环境变量 `APP_CATCH_HOME` 指向 `tempfile` 临时目录，**绝不触碰真实的 `~/.app_catch`**。
 
 ## 约定
 
