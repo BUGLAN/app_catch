@@ -64,6 +64,57 @@
 读取一个会话的完整事件流时，应按 `seq` 升序读取全部分片，最后读活跃片 `events.jsonl`。
 工具函数 `launcher_core::runtime::shard_file_name(seq)` 给出分片文件名。
 
+## 编码处理策略
+
+子进程的输出是**字节流**，不保证是 UTF-8。Windows 中文环境的控制台/日志默认是
+cp936(GBK)，大量 Python 项目（如 GPT-SoVITS、VITS、各类字幕工具）直接以 GBK 写出中文。
+因此捕获层必须显式处理编码，而不是把所有非 UTF-8 字节一律替换掉。
+
+### 解码顺序（每一行独立判定）
+
+| 步骤 | 做法 | 标记 |
+| --- | --- | --- |
+| 1 | `std::str::from_utf8` **严格**解码成功 | `utf-8` |
+| 2 | 判定为「超长行按字节切开的 UTF-8 残片」时按 UTF-8 还原 | `utf-8`（无损失）或 `lossy`（断口处有损） |
+| 3 | 失败则按**平台回退编码**解码：Windows 用 `encoding_rs::GBK` | `gbk` |
+| 4 | 仍然失败才用 `from_utf8_lossy` 兜底 | `lossy` |
+
+### 为什么不用 `from_utf8_lossy` 兜底
+
+`from_utf8_lossy` 会把每个无法解码的字节静默替换成 U+FFFD。对 GBK 中文来说，
+这等于**当场销毁原始信息**：`d6 d0 ce c4 b2 e2 ca d4`（「中文测试」）会变成
+一串替换字符，事后无法还原，日志里也看不出发生过什么。这直接违反
+「只凭会话目录里的文件，agent 能完整还原输出」的基线验收标准。
+
+所以兜底只在**真正无法解码**时才发生，并且必定带上 `encoding: "lossy"` 标记，
+让读取方明确知道「这一行不可信」。
+
+### 为什么是 GBK 而不是 cp1252 / latin-1
+
+- **GBK/GB18030** 是简体中文环境的实际默认代码页（cp936），中文内容解码后是正确汉字；
+- **cp1252 / latin-1** 虽然「几乎总能解码」任何字节，但产出的西欧字母对中文日志毫无意义，
+  等于换一种方式损坏信息，而且**永远不会触发 lossy**，反而掩盖了问题；
+- 因此本项目只做「UTF-8 → GBK」这条与目标平台匹配的回退链，不做「总是能解」的假回退。
+
+### 对 agent 的含义
+
+- `encoding` 缺失 → 按 `utf-8` 解读（旧日志兼容）；
+- `encoding: "utf-8"` / `"gbk"` → `line` 就是原文，可直接使用；
+- `encoding: "lossy"` → 该行**不可还原**，分析时必须显式说明「此处内容已损坏」，不得当作正常输出；
+- 同一次会话的不同行可以有不同编码（进程先输出 UTF-8、后输出 GBK 是常见情况），
+  因此编码判定必须**逐行**进行，不能整会话只判定一次。
+
+### 相关 API
+
+```rust
+use launcher_core::session::OutputEncoding;
+
+OutputEncoding::Utf8.as_str();   // "utf-8"
+OutputEncoding::Gbk.as_str();    // "gbk"
+OutputEncoding::Lossy.as_str();  // "lossy"
+OutputEncoding::default();       // Utf8 —— 旧日志缺字段时的默认值
+```
+
 ## 溢出（overflow）语义
 
 输出捕获走「读管道 → 有界 channel → 串行写盘」，channel 默认容量 8192 行。
@@ -120,6 +171,18 @@
 | `ts` | string | ✅ | RFC3339 时间戳 |
 | `stream` | string | ✅ | `"stdout"` 或 `"stderr"` |
 | `line` | string | ✅ | 单行内容（不含行尾换行） |
+| `encoding` | string | ❌ | 该行原始字节的编码标记，取值见下表；**缺失时按 `"utf-8"` 解读**（向后兼容旧日志） |
+
+`encoding` 的取值与含义：
+
+| 取值 | 含义 | 原始字节可否还原 |
+| --- | --- | --- |
+| `"utf-8"` | 原始字节本身就是合法 UTF-8，严格解码成功 | ✅ 完全可还原 |
+| `"gbk"` | 原始字节不是合法 UTF-8，但按 GBK/GB18030（cp936）无损解码成功 | ✅ 完全可还原（按 GBK 解码后即原文） |
+| `"lossy"` | 两种解码都失败，已用 U+FFFD 替换字符兜底 | ❌ **不可还原**，该行内容有损 |
+
+> Windows 中文环境下 Python 项目默认以 cp936(GBK) 输出，因此 `"gbk"` 在真实日志中很常见，
+> 它不是异常，而是「这行是 GBK 编码的中文」的正常标记。
 
 ### status
 
@@ -157,8 +220,8 @@
 
 ```jsonl
 {"event":"start","v":1,"ts":"2026-10-24T18:30:00.123456789Z","session_id":"e6b562fe-91e5-45f3-8a34-8c42e0be9cef","app_id":"gpt-sovits","cmd":"python main.py --port 9880","cwd":"E:/repo/GPT-SoVITS","argv":["python","main.py","--port","9880"],"pid":4321,"ppid":1234,"start_time":134000000000000000}
-{"event":"output","v":1,"ts":"2026-10-24T18:30:01.000000000Z","stream":"stdout","line":"Running on local URL: http://127.0.0.1:9880"}
-{"event":"output","v":1,"ts":"2026-10-24T18:30:02.000000000Z","stream":"stderr","line":"warning: torch not found, fallback to CPU"}
+{"event":"output","v":1,"ts":"2026-10-24T18:30:01.000000000Z","stream":"stdout","line":"Running on local URL: http://127.0.0.1:9880","encoding":"utf-8"}
+{"event":"output","v":1,"ts":"2026-10-24T18:30:02.000000000Z","stream":"stderr","line":"warning: torch not found, fallback to CPU","encoding":"utf-8"}
 {"event":"status","v":1,"ts":"2026-10-24T18:30:03.000000000Z","state":"running","window_title":"GPT-SoVITS","ports":[9880]}
 {"event":"status","v":1,"ts":"2026-10-24T18:30:04.000000000Z","state":"running","window_title":null,"ports":null}
 {"event":"exit","v":1,"ts":"2026-10-24T18:31:00.000000000Z","code":0,"reason":"normal"}
@@ -175,6 +238,8 @@
 - 按行读取并跳过空行；对每行做 JSON 解析；
 - 用 `event` 字段分派；用 `v` 判断版本，未知 `event` 或未知字段直接忽略；
 - `output` 的 `stream` 区分 stdout/stderr，`line` 是按行切分的原始内容（不含换行符）；
+- `output` 的 `encoding` 说明该行原始编码：`utf-8` / `gbk` 可直接使用，`lossy` 表示内容已损坏、
+  分析时必须说明；字段缺失时按 `utf-8` 解读（兼容旧日志）；
 - 出现 `overflow` 事件表示该时间点有 `dropped` 行输出未被写入，分析时需说明数据不完整；
 - 文件末尾没有 `exit` 事件 = 会话未正常结束（启动器被强杀等），应视为不完整会话。
 

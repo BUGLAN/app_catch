@@ -155,7 +155,31 @@ for snapshot in manager.list_active().await {
 
 1. **不阻塞子进程**：channel 满时用 `try_send`，失败只累计丢弃计数。若改成 await，子进程会因写满管道而卡死；
 2. **不静默丢行**：丢弃计数以 `overflow` 事件写入 JSONL；
-3. **不因非法 UTF-8 丢行**：用 `read_until(b'\n')` 读原始字节再 `from_utf8_lossy`，而不是 `lines()`（后者遇非法 UTF-8 会整行丢弃）。
+3. **不因非法 UTF-8 丢行**：用 `read_until(b'\n')` 读原始字节再解码，而不是 `lines()`（后者遇非法 UTF-8 会整行丢弃）。
+
+### 编码处理：严格解码 + 平台回退
+
+读取仍是 `read_until(b'\n')` 拿**原始字节**，但解码不再是 `from_utf8_lossy` 一把梭，
+而是逐行按固定顺序判定（实现见 `runtime::capture::decode_line_lossless`）：
+
+| 步骤 | 判定 | 写入 `encoding` |
+| --- | --- | --- |
+| 1 | `std::str::from_utf8` 严格解码成功 | `utf-8` |
+| 2 | 判定为超长行按字节切开的 UTF-8 残片（开头孤立续字节 / 结尾不完整序列） | `utf-8` 或 `lossy` |
+| 3 | 按**平台回退编码**解码成功 —— Windows 用 `encoding_rs::GBK`（cp936） | `gbk` |
+| 4 | 都失败 | `lossy`（有损，且显式标记） |
+
+**为什么不用 lossy 兜底**：`from_utf8_lossy` 把每个非法字节替换成 U+FFFD，对 GBK 中文就是
+当场销毁原始信息——`d6 d0 ce c4 b2 e2 ca d4`（「中文测试」）会变成一串替换字符，事后无法还原。
+Windows 中文环境下大量 Python 项目（GPT-SoVITS、VITS、字幕工具）默认 cp936 输出，
+用 lossy 兜底等于把这些会话的日志全部损坏，直接违反「只凭会话文件即可完整还原输出」的验收标准。
+因此 lossy 只在**真正无法解码**时发生，并且必定带上 `encoding: "lossy"`，绝不静默损坏。
+
+**为什么回退 GBK 而不是 cp1252**：GBK/GB18030 是简体中文环境的实际默认代码页，解出的是正确汉字；
+cp1252 / latin-1 虽然「总能解码」，但产出西欧字母对中文日志毫无意义，且永远不会触发 lossy，
+等于用另一种方式掩盖损坏。本项目只做与目标平台匹配的回退链。
+
+Linux/macOS 暂无平台回退编码（系统默认 UTF-8），会直接进入 lossy 分支并如实标记。
 
 ## Windows 进程后端
 

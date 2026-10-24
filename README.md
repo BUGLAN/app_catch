@@ -3,6 +3,8 @@
 开发者向的桌面应用启动器：把 E:\repo 下的自开发应用收进可管理列表，一键启动，并把每个会话的进程信息、运行状态与 stdout/stderr 全量捕获为结构化 JSONL，供 AI agent 直接读取。
 
 > 当前进度：**M1 核心完成，状态增强待做**。配置管理、路径布局、会话事件模型、Windows 进程后端（Job Object 杀树）、输出捕获与 JSONL 轮转、会话管理器与重启重关联均已落地并有真实子进程测试覆盖；窗口标题与监听端口采集（M1c）待做。界面仍是 M0 的状态页。
+>
+> 输出捕获按「严格 UTF-8 → Windows GBK(cp936) 回退 → lossy 标记」逐行解码，GBK 中文日志无损保真；每行带 `encoding` 标记，详见 [docs/SESSION_FORMAT.md](docs/SESSION_FORMAT.md)。
 
 ## 目录架构
 
@@ -63,7 +65,7 @@ pnpm tauri build
 | --- | --- | --- |
 | `config` | `AppId` / `AppConfig` / `AppStore`：每应用一个 TOML，原子写盘 | [docs/CONFIG.md](docs/CONFIG.md) |
 | `paths` | `APP_CATCH_HOME` 优先的目录布局（apps / sessions / icons） | [docs/CONFIG.md](docs/CONFIG.md) |
-| `session` | `SessionId` / `SessionEvent`：自描述 v=1 的 JSONL 事件模型 | [docs/SESSION_FORMAT.md](docs/SESSION_FORMAT.md) |
+| `session` | `SessionId` / `SessionEvent`：自描述 v=1 的 JSONL 事件模型（`output` 事件带 `encoding` 标记） | [docs/SESSION_FORMAT.md](docs/SESSION_FORMAT.md) |
 | `platform` | `ProcessBackend` / `IconCapture` trait；Windows 后端用 Job Object 实现杀树与 PID 复用判定 | [docs/RUNTIME.md](docs/RUNTIME.md) |
 | `runtime` | `SessionManager` 门面、输出捕获管线、JSONL 写入与轮转 | [docs/RUNTIME.md](docs/RUNTIME.md) |
 | `error` / `fsutil` | 统一错误类型 `AppCatchError` 与原子写盘工具 | 见源码 rustdoc |
