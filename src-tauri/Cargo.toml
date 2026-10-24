@@ -1,0 +1,22 @@
+[package]
+name = "app-catch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "app_catch Tauri 2 壳层（command 层薄封装）"
+
+# Tauri 2 约定：库名固定为 <name>_lib，供 main.rs 与移动端入口复用
+[lib]
+name = "app_catch_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+launcher-core = { workspace = true }
