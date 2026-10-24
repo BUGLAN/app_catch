@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, isNotHosted, toCommandError } from "./lib/api";
+import { invalidateIcon } from "./lib/iconModel";
 import type {
   AppConfig,
   AppConfigInput,
@@ -19,6 +20,15 @@ import { AppForm } from "./components/AppForm";
 import { AppList } from "./components/AppList";
 import { SessionDetail } from "./components/SessionDetail";
 import { Toast, type ToastMessage } from "./components/Toast";
+
+/**
+ * 会话启动后等待多久再抓「运行时图标」（毫秒）。
+ *
+ * 窗口创建通常在 1 秒内完成（PySide/Electron 首次启动可能更久）。
+ * 取 1.5 秒是折中：太早窗口还没出来，太晚用户已经看过列表了。
+ * 抓不到也不影响任何功能——前端会一直显示默认图。
+ */
+const RUNTIME_ICON_DELAY_MS = 1500;
 
 /** 表单的编辑目标：新建（null）或已有应用。 */
 type FormTarget = AppConfig | null;
@@ -40,6 +50,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [boot, setBoot] = useState<BootReport | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  /** 图标刷新触发器：会话启动后 +1，让列表与详情重新抓「运行时图标」。 */
+  const [iconRefresh, setIconRefresh] = useState(0);
 
   const toastSeq = useRef(0);
 
@@ -178,6 +190,11 @@ export default function App() {
         setSessions((prev) => prev.concat(snapshot));
         setSelectedId(app.id);
         setSelectedSession(snapshot.session_id);
+
+        // 会话起来后窗口才存在：此刻才可能抓到基线说的「运行时真图标」。
+        // 延迟一拍再抓，给窗口创建留出时间（抓不到也无所谓，静默兜底）。
+        invalidateIcon(app.id);
+        window.setTimeout(() => setIconRefresh((value) => value + 1), RUNTIME_ICON_DELAY_MS);
       }
     },
     [run]
@@ -287,6 +304,7 @@ export default function App() {
               }}
               onStart={handleStart}
               busy={busy}
+              iconRefresh={iconRefresh}
             />
           )}
         </aside>
@@ -319,6 +337,7 @@ export default function App() {
                 onEdit={() => setFormTarget(selectedApp)}
                 onDelete={() => setDeleteTarget({ app: selectedApp })}
                 onSelectSession={setSelectedSession}
+                iconRefresh={iconRefresh}
               />
               {activeSession ? (
                 <SessionDetail

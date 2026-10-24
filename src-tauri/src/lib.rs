@@ -51,6 +51,8 @@ pub fn run() {
             commands::get_capture_config,
             commands::set_capture_config,
             commands::recover_sessions,
+            commands::get_app_icon,
+            commands::default_icon,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Tauri 应用失败");

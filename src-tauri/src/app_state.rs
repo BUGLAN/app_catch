@@ -116,6 +116,22 @@ impl AppState {
         let app_id = parse_app_id(id)?;
         self.store.get(&app_id).map_err(CommandError::from)
     }
+
+    /// 某个应用当前是否有运行中的会话；返回最近启动的那个根 pid。
+    ///
+    /// 图标抓取需要 pid 才能走「运行中窗口图标」这条路径
+    /// ——这正是基线说的「启动后尽力抓取运行时图标」。
+    pub async fn running_pid_for_app(&self, app_id: &str) -> Option<u32> {
+        let manager = self.manager();
+        manager
+            .list_active()
+            .await
+            .into_iter()
+            .filter(|snapshot| snapshot.app_id.as_str() == app_id)
+            .filter(|snapshot| snapshot.state == launcher_core::RunState::Running)
+            .map(|snapshot| snapshot.pid)
+            .next_back()
+    }
 }
 
 /// 用给定捕获配置构造会话管理器。

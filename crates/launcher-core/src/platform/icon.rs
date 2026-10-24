@@ -180,6 +180,15 @@ impl RgbaImage {
 /// PNG 魔数（8 字节签名）。
 pub const PNG_MAGIC: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
+/// 内置默认图标（256×256 PNG，深色圆角底板 + 主色四宫格）。
+///
+/// 编译进二进制而不是放磁盘：兜底图必须在**任何情况下**都能用，
+/// 不能依赖 `~/.app_catch` 可读、也不能依赖当前工作目录。
+///
+/// 抓不到图标是明确的产品预期（Python 服务类应用没有窗口），
+/// 所以这不是「错误图」，而是正常状态下的默认外观。
+pub const DEFAULT_ICON_PNG: &[u8] = include_bytes!("../../assets/default_icon.png");
+
 /// 把 RGBA 位图编码成 PNG 字节。
 ///
 /// 用 `png` crate 而不是 `image`：本 crate 只需要「RGBA → PNG」这一条路径，
@@ -430,6 +439,117 @@ fn base64_encode(input: &[u8]) -> String {
         });
     }
     out
+}
+
+
+// ---------------------------------------------------------------------------
+// 会话可执行文件解析（供图标抓取用）
+// ---------------------------------------------------------------------------
+
+/// 从应用配置里推测「真正的可执行文件路径」。
+///
+/// 图标抓取需要 exe 才能取资源图标，但用户填的命令形态很杂：
+///
+/// | 用户填的命令 | 期望解析结果 |
+/// | --- | --- |
+/// | \`C:\Program Files\App\app.exe\` | 原样（绝对路径且存在） |
+/// | \`notepad\` | \`C:\Windows\System32\notepad.exe\` |
+/// | \`python\` | \`...\Python311\python.exe\` |
+///
+/// 解析不出来的形态（相对路径、脚本名、解释器参数里的路径）一并返回 \`None\`：
+/// 图标是可再生资源，猜错比猜不出来的代价更大。
+pub fn resolve_executable(command: &str) -> Option<PathBuf> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = Path::new(trimmed);
+
+    // 1) 已经是存在的文件：直接用
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+
+    // 2) 带路径分隔符但文件不存在：不再猜测（可能是相对路径或写错了）
+    if trimmed.contains('\\') || trimmed.contains('/') {
+        return None;
+    }
+
+    // 3) 纯命令名：按 Windows 的搜索顺序在 PATH 与两个系统目录里找
+    let with_ext = if path.extension().is_some() {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.exe")
+    };
+
+    if let Some(found) = search_in_path(&with_ext) {
+        return Some(found);
+    }
+    for dir in ["C:/Windows/System32", "C:/Windows"] {
+        let candidate = Path::new(dir).join(&with_ext);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// 在 \`PATH\` 各目录里找同名文件。
+fn search_in_path(file_name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(file_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod executable_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_existing_file_is_returned_as_is() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"stub").expect("写桩失败");
+
+        let resolved = resolve_executable(&exe.to_string_lossy()).expect("应解析出路径");
+        assert_eq!(resolved, exe);
+    }
+
+    #[test]
+    fn bare_command_with_separator_but_missing_is_not_guessed() {
+        assert!(resolve_executable("C:/no/such/dir/app.exe").is_none());
+        assert!(resolve_executable("relative/app.exe").is_none());
+    }
+
+    #[test]
+    fn empty_command_has_no_executable() {
+        assert!(resolve_executable("").is_none());
+        assert!(resolve_executable("   ").is_none());
+    }
+
+    /// Windows 上 \`cmd\` 一定能在 System32 或 PATH 里找到。
+    #[cfg(windows)]
+    #[test]
+    fn bare_windows_command_resolves_through_path() {
+        let resolved = resolve_executable("cmd").expect("cmd 应能在 PATH 里找到");
+        assert!(resolved.is_file());
+        assert!(
+            resolved
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase().starts_with("cmd."))
+                .unwrap_or(false),
+            "应解析到 cmd.exe，实际: {}",
+            resolved.display()
+        );
+    }
 }
 
 #[cfg(test)]

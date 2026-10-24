@@ -98,4 +98,14 @@ export const api = {
 
   /** 启动期恢复残留会话。 */
   recoverSessions: () => call<BootReport>("recover_sessions"),
+
+  /**
+   * 取应用图标，返回 data URL；`null` 表示没有图标（用内置默认图）。
+   *
+   * 走 data URL 而不是 `asset:` 协议：省掉 assetProtocol scope 与 capability 配置，
+   * 少一个只在运行时才暴露的「图裂」故障面（详见 docs/ICONS.md）。
+   */
+  getAppIcon: (appId: string) => call<string | null>("get_app_icon", { appId }),
+  /** 内置默认图标（PNG data URL），永远可用。 */
+  defaultIcon: () => call<string>("default_icon"),
 };

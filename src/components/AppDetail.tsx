@@ -1,8 +1,9 @@
 /**
- * 应用详情：配置展示 + 操作按钮 + 该应用的活跃会话列表（多实例）。
+ * 应用详情：图标 + 配置展示 + 操作按钮 + 该应用的活跃会话列表（多实例）。
  */
 import type { AppConfig, SessionSnapshot } from "../lib/types";
 import { formatDateTime, renderCommand, runStateLabel } from "../lib/logModel";
+import { AppIcon } from "./AppIcon";
 
 interface Props {
   app: AppConfig;
@@ -15,6 +16,8 @@ interface Props {
   onEdit: () => void;
   onDelete: () => void;
   onSelectSession: (sessionId: string) => void;
+  /** 图标刷新触发器：会话启动后 +1，重新抓运行时图标。 */
+  iconRefresh?: number;
 }
 
 export function AppDetail({
@@ -28,6 +31,7 @@ export function AppDetail({
   onEdit,
   onDelete,
   onSelectSession,
+  iconRefresh = 0,
 }: Props) {
   const envEntries = Object.entries(app.env ?? {});
   const runningCount = sessions.filter((session) => session.state === "running").length;
@@ -36,11 +40,14 @@ export function AppDetail({
   return (
     <section className="panel">
       <div className="panel-head">
-        <div>
-          <h2 className="panel-title">{app.name}</h2>
-          <p className="panel-sub">
-            id <code>{app.id}</code>
-          </p>
+        <div className="panel-head-main">
+          <AppIcon appId={app.id} name={app.name} size="lg" refreshKey={iconRefresh} />
+          <div>
+            <h2 className="panel-title">{app.name}</h2>
+            <p className="panel-sub">
+              id <code>{app.id}</code>
+            </p>
+          </div>
         </div>
         <div className="panel-actions">
           <button type="button" className="btn btn-primary" onClick={onStart} disabled={busy}>

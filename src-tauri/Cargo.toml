@@ -20,6 +20,8 @@ tauri = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 launcher-core = { workspace = true }
+# 图标抓取放进 spawn_blocking：Shell API 可能慢，不能占住 tokio worker
+tokio = { workspace = true }
 
 [dev-dependencies]
 # 命令层测试用临时目录隔离 APP_CATCH_HOME

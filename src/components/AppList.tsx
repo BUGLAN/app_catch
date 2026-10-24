@@ -1,9 +1,12 @@
 /**
- * 左侧应用列表：图标占位块 + 名称 + 标签 + 状态徽标，hover 显示「启动」按钮。
+ * 左侧应用列表：应用图标 + 名称 + 标签 + 状态徽标，hover 显示「启动」按钮。
+ *
+ * 图标由 {@link AppIcon} 负责：抓不到就用内置默认图，绝不显示错误。
  */
 import type { AppConfig, SessionSnapshot } from "../lib/types";
-import { initialOf, runStateLabel } from "../lib/logModel";
+import { runStateLabel } from "../lib/logModel";
 import type { RunState } from "../lib/types";
+import { AppIcon } from "./AppIcon";
 
 interface Props {
   apps: AppConfig[];
@@ -12,6 +15,8 @@ interface Props {
   onSelect: (app: AppConfig) => void;
   onStart: (app: AppConfig) => void;
   busy: boolean;
+  /** 图标刷新触发器：会话启动后 +1，让列表重新抓运行时图标。 */
+  iconRefresh?: number;
 }
 
 /** 一个应用的综合状态：有 running 会话即运行中，否则看最近一次退出结果。 */
@@ -39,7 +44,15 @@ const STATE_LABEL: Record<RunState | "idle", string> = {
   crashed: runStateLabel("crashed"),
 };
 
-export function AppList({ apps, sessions, selectedId, onSelect, onStart, busy }: Props) {
+export function AppList({
+  apps,
+  sessions,
+  selectedId,
+  onSelect,
+  onStart,
+  busy,
+  iconRefresh = 0,
+}: Props) {
   if (apps.length === 0) {
     return <p className="sidebar-hint">暂无应用，点右上角「新建应用」录入第一个。</p>;
   }
@@ -65,9 +78,7 @@ export function AppList({ apps, sessions, selectedId, onSelect, onStart, busy }:
                 }
               }}
             >
-              <span className="app-avatar" aria-hidden="true">
-                {initialOf(app.name)}
-              </span>
+              <AppIcon appId={app.id} name={app.name} refreshKey={iconRefresh} />
               <span className="app-item-main">
                 <span className="app-item-name" title={app.name}>
                   {app.name}

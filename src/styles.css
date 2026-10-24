@@ -191,17 +191,42 @@ code,
   border-color: var(--border-strong);
 }
 
-.app-avatar {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
+/* 应用图标：宽高写死，避免加载完成后撑动列表布局 */
+.app-icon {
+  flex: none;
+  display: block;
+  object-fit: contain;
   border-radius: 8px;
   background: #232938;
+  /* 图标本身带透明边，浅色描边让它在深色底上有边界感 */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.app-icon-sm {
+  width: 30px;
+  height: 30px;
+}
+
+.app-icon-lg {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+/* 连默认图都取不到时的首字块兜底（非 Tauri 环境） */
+.app-icon-text {
+  display: grid;
+  place-items: center;
   color: var(--text-dim);
   font-weight: 600;
   font-size: 13px;
-  flex: none;
+}
+
+.panel-head-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .app-item-main {

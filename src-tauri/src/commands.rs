@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use launcher_core::config::AppConfig;
+use launcher_core::platform::IconCapture;
 use launcher_core::runtime::{CaptureConfig, SessionManager};
 use launcher_core::session::SessionId;
 
@@ -265,6 +266,70 @@ pub async fn recover_sessions(state: State<'_, AppState>) -> Result<BootReport, 
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// 图标
+// ---------------------------------------------------------------------------
+
+/// 取某个应用的图标，返回可直接喂给 \`<img src>\` 的 **data URL**。
+///
+/// 返回 \`Ok(None)\` 表示「抓不到图标」——这不是错误，前端应显示内置默认图
+/// （Python 服务类应用没有窗口，一定会走到这里）。
+///
+/// 三个刻意的设计：
+/// 1. **走 data URL 而不是 \`asset:\` 协议**：图标本身只有几 KB 到几十 KB，
+///    base64 之后仍远小于一次 IPC 的合理开销；而 \`asset:\` 协议需要在
+///    \`tauri.conf.json\` 里配 \`assetProtocol.scope\`、在 capabilities 里加
+///    \`core:asset:default\`，任何一处漏配都只在运行时暴露成「图裂」，调试成本高。
+/// 2. **放在 \`spawn_blocking\` 里跑**：exe 图标会走 \`PrivateExtractIconsW\` /
+///    \`SHGetFileInfoW\`，后者是 Shell API，遇到网络盘或冷缓存时可能几十毫秒起步，
+///    不能占住 tokio 的 worker 线程。
+/// 3. **失败绝不报错**：整条链路返回 \`Option\`，任何异常都收敛成 \`None\`。
+#[tauri::command]
+pub async fn get_app_icon(
+    state: State<'_, AppState>,
+    app_id: String,
+) -> Result<Option<String>, CommandError> {
+    let app_id = parse_app_id(&app_id)?;
+    let app = state.store().get(&app_id).map_err(CommandError::from)?;
+
+    // 有运行中会话就带上 pid：优先抓窗口上的运行时真图标
+    let pid = state.running_pid_for_app(app.id.as_str()).await;
+    let executable = launcher_core::platform::icon::resolve_executable(&app.command);
+
+    let target = launcher_core::platform::IconTarget::for_app(app.id.clone())
+        .with_custom_icon(app.icon.clone())
+        .with_executable(executable)
+        .with_pid(pid);
+
+    // 图标抓取是纯尽力而为：即使 spawn_blocking 本身失败也只是「没有图标」
+    let captured = tokio::task::spawn_blocking(move || {
+        launcher_core::platform::default_icon_capture().capture(&target)
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let Some(path) = captured else {
+        return Ok(None);
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        // 缓存文件读不出来（例如刚好被清理）：当作没有图标
+        return Ok(None);
+    };
+    Ok(Some(launcher_core::platform::icon::to_data_url(&bytes)))
+}
+
+/// 内置默认图标的 data URL（前端拿不到应用图标时用它，避免纯色占位块）。
+///
+/// 图标本身编译进二进制（\`include_bytes!\`），因此永远可用、不依赖磁盘。
+#[tauri::command]
+pub fn default_icon() -> String {
+    launcher_core::platform::icon::to_data_url(
+        launcher_core::platform::icon::DEFAULT_ICON_PNG,
+    )
+}
+
 /// 返回 launcher-core 的版本号（M0 打通链路用，保留以兼容既有前端）。
 #[tauri::command]
 pub fn core_version() -> String {
@@ -338,5 +403,54 @@ mod tests {
     fn versions_are_exposed_for_legacy_frontend() {
         assert_eq!(core_version(), launcher_core::version());
         assert_eq!(app_version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    /// 内置默认图标必须是合法 PNG 的 data URL（前端在无图标时直接用它）。
+    #[test]
+    fn default_icon_is_a_png_data_url() {
+        let url = default_icon();
+        assert!(
+            url.starts_with("data:image/png;base64,"),
+            "应是 PNG 的 data URL，实际前缀: {}",
+            &url[..url.len().min(40)]
+        );
+        let encoded = url.trim_start_matches("data:image/png;base64,");
+        // PNG 魔数的 base64 前缀：证明解出来确实是 PNG 而不是别的字节
+        assert!(
+            encoded.starts_with("iVBORw0KGgo"),
+            "base64 解出来应是 PNG 魔数，实际前缀: {}",
+            &encoded[..encoded.len().min(20)]
+        );
+        assert!(encoded.len() > 1000, "默认图标不应是空壳");
+    }
+
+    /// 图标 data URL 生成链路：真实 PNG 字节 -> data URL 可被前端解码。
+    #[test]
+    fn to_data_url_round_trips_png_bytes() {
+        let bytes = launcher_core::platform::icon::DEFAULT_ICON_PNG;
+        assert!(
+            launcher_core::platform::icon::looks_like_png(bytes),
+            "内置默认图标必须是 PNG"
+        );
+        let url = launcher_core::platform::icon::to_data_url(bytes);
+        assert!(url.starts_with("data:image/png;base64,"));
+        // base64 长度应是 4 的倍数
+        let encoded = url.trim_start_matches("data:image/png;base64,");
+        assert_eq!(encoded.len() % 4, 0, "base64 长度必须是 4 的倍数");
+    }
+
+    /// 命令层的可执行文件解析：绝对路径直接用，找不到的命令不猜。
+    #[test]
+    fn executable_resolution_used_by_icon_command() {
+        // 绝对路径 + 存在 -> 原样返回
+        let exe = launcher_core::platform::icon::resolve_executable("C:/Windows/System32/notepad.exe");
+        if std::path::Path::new("C:/Windows/System32/notepad.exe").is_file() {
+            assert!(exe.is_some(), "存在的绝对路径应解析成功");
+        }
+        // 不存在的绝对路径 -> None（不猜测）
+        assert!(
+            launcher_core::platform::icon::resolve_executable("C:/no/such/app.exe").is_none(),
+            "不存在的路径不应被猜测"
+        );
     }
 }
