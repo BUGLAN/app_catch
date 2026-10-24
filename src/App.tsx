@@ -109,6 +109,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 轮询间隔读的是运行中会话数，但绝不能让 effect 依赖 sessions：
+  // 那样每次轮询写回 sessions 都会重跑 effect、重置定时器，形成自我触发的循环。
+  const runningCountRef = useRef(0);
+
   // 会话列表轮询：运行中 1s，全部退出后放慢到 3s
   useEffect(() => {
     let timer: number | undefined;
@@ -118,13 +122,14 @@ export default function App() {
       if (document.visibilityState === "visible") {
         const active = await run(() => api.listActiveSessions());
         if (!cancelled && active) {
+          runningCountRef.current = active.filter((s) => s.state === "running").length;
           setSessions(active);
         }
       }
       if (cancelled) {
         return;
       }
-      const running = sessions.filter((s) => s.state === "running").length;
+      const running = runningCountRef.current;
       timer = window.setTimeout(tick, running > 0 ? 1000 : 3000);
     };
 
@@ -135,7 +140,7 @@ export default function App() {
         window.clearTimeout(timer);
       }
     };
-  }, [run, sessions]);
+  }, [run]);
 
   const selectedApp = useMemo(
     () => apps.find((app) => app.id === selectedId) ?? null,

@@ -56,7 +56,11 @@ export function useSessionLog(session: SessionSnapshot): SessionLogState {
   const cursorRef = useRef<LogCursor>(INITIAL_CURSOR);
   const sessionIdRef = useRef(session.session_id);
 
-  // 会话切换（同组件复用时）重置全部状态
+  // 会话切换时重置全部状态。
+  //
+  // 依赖必须是 `session.session_id` 而不是整个 `session` 对象：父组件每秒轮询
+  // list_active_sessions 都会生成新的对象，若依赖对象本身，这里会每秒把日志清空一次。
+  // 快照字段的变化由轮询自己刷新，不需要在这里同步。
   useEffect(() => {
     sessionIdRef.current = session.session_id;
     cursorRef.current = INITIAL_CURSOR;
@@ -67,7 +71,8 @@ export function useSessionLog(session: SessionSnapshot): SessionLogState {
     setGone(false);
     setError(null);
     setSnapshot(session);
-  }, [session]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.session_id]);
 
   const clear = useCallback(() => {
     // 只清界面缓冲，不动游标：清空后新事件仍然从当前位置继续追加
