@@ -21,6 +21,8 @@
 | `docs/RUNTIME.md` | 会话运行时：生命周期状态机、`SessionManager` API、退出分类、捕获/轮转策略、Windows 后端实现与已知限制。 |
 | `docs/GUI.md` | **M2**：界面结构、命令层 API 一览、轮询策略、分片读取与边写边读的安全性、已知限制。 |
 | `docs/ICONS.md` | **M3**：图标优先级链、PNG 规范、缓存位置与失效规则、兜底语义、为什么用 data URL 与 `png` crate、已知限制。 |
+| `docs/E2E.md` | **M5**：Windows 打包说明、真实项目端到端验收流程、CDP 驱动安装版 GUI 的方法、会话目录复原工具。 |
+| `scripts/` | `e2e-installed-gui.mjs`（CDP 驱动安装版 GUI）与 `session-replay.mjs`（只读会话目录复原全过程）。 |
 | `Cargo.toml` | cargo workspace 根，成员为 `crates/launcher-core` 与 `src-tauri`，公共依赖集中在 `[workspace.dependencies]`。 |
 
 ## 前置依赖
@@ -54,6 +56,65 @@ pnpm tauri build
 ```
 
 > `pnpm tauri dev` / `pnpm tauri build` 依赖 `dist/` 与 Vite 端口 5173（`vite.config.ts` 中 `strictPort` 已锁定，避免端口漂移导致白屏）。
+
+## 打包（Windows）
+
+### 命令
+
+```bash
+# 一条命令完成：pnpm build（tsc + vite）-> cargo build --release -> 生成安装包
+pnpm tauri build
+```
+
+### 产物路径
+
+| 目标 | 路径 | 说明 |
+| --- | --- | --- |
+| NSIS 安装包 | `target/release/bundle/nsis/app_catch_0.1.0_x64-setup.exe` | **首选产物**，当前用户级安装，无需管理员权限 |
+| MSI 安装包 | `target/release/bundle/msi/app_catch_0.1.0_x64_en-US.msi` | WiX 产物，适合企业分发/GPO |
+| 裸可执行文件 | `target/release/app-catch.exe` | 免安装运行，同样读取 `~/.app_catch` |
+
+实测体积（0.1.0，x64 release）：NSIS ≈ 2.43 MiB、MSI ≈ 3.61 MiB、裸 exe ≈ 10.5 MiB。
+
+### NSIS 与 MSI 的差别
+
+| 维度 | NSIS（.exe） | MSI（.msi） |
+| --- | --- | --- |
+| 依赖 | NSIS 3.13（由 Tauri CLI 自动下载缓存，无需手动安装） | WiX 3.14（同样自动下载缓存） |
+| 安装范围 | 默认 `currentUser`（本配置显式固定），装到 `%LOCALAPPDATA%\app_catch` | 默认 perMachine，需管理员 |
+| 静默安装 | `app_catch_0.1.0_x64-setup.exe /S /D=<目录>`（`/D` 必须最后且不加引号） | `msiexec /i app_catch_0.1.0_x64_en-US.msi /qn INSTALLDIR=<目录>` |
+| 典型用途 | 面向个人用户的分发 | 企业软件分发与卸载登记 |
+
+打包配置（`src-tauri/tauri.conf.json`）：
+
+```json
+"bundle": {
+  "active": true,
+  "targets": ["nsis", "msi"],
+  "windows": { "nsis": { "installMode": "currentUser" } }
+}
+```
+
+为什么把 `targets` 从 `"all"` 改成显式清单：`"all"` 会尝试当前平台上**所有**已知目标，一旦将来引入新平台或新打包器，构建会静默多出（或失败于）预期之外的产物；显式列出 `nsis`+`msi` 让「Windows 上产出什么」成为可审阅的配置事实。NSIS 固定 `currentUser` 则是为了避免安装时触发 UAC 提权——安装版与免安装版的行为应一致。
+
+### 打包后的数据位置
+
+安装版与 dev 模式**共用同一套路径规则**：默认 `~/.app_catch`（即 `%USERPROFILE%\.app_catch`），首次启动自动创建 `apps/`、`sessions/`、`icons/`。要换位置，启动前设置 `APP_CATCH_HOME` 即可；dev 模式写的配置，安装版能直接读到，反之亦然。
+
+### 安装包验证（无需 GUI 的快速自查）
+
+```bash
+# 静默安装到隔离目录（避免污染真实安装位置）
+target/release/bundle/nsis/app_catch_0.1.0_x64-setup.exe /S /D=E:\tmp\app_catch_install
+
+# 用隔离的 APP_CATCH_HOME 启动，确认窗口正常且目录布局被创建
+set APP_CATCH_HOME=E:\tmp\app_catch_home
+E:\tmp\app_catch_install\app-catch.exe
+```
+
+预期：出现 1024×720 的 `app_catch` 窗口；`%APP_CATCH_HOME%` 下出现 `apps\`、`icons\`、`sessions\` 三个目录。
+
+完整的端到端验收流程（含用真实项目跑通、以及用 CDP 驱动安装版 GUI 点「启动/停止」）见 [docs/E2E.md](docs/E2E.md)。
 
 ## 如何运行 GUI
 
@@ -125,7 +186,7 @@ pnpm tauri build
 | M2 | GUI：应用列表（图标/名称/状态）、启动/停止/重启、会话详情（实时日志流、状态、退出信息） | ✅ 已完成 |
 | M3 | 图标：Windows 抓取 + 缓存 + 兜底 | ✅ 已完成 |
 | M4 | macOS 对齐：构建通过、进程组语义、图标抓取 | ⏳ 待做 |
-| M5 | 打包与端到端验收：用真实项目（Python 服务 + GUI 应用）走完整流程 | ⏳ 待做 |
+| M5 | 打包与端到端验收：NSIS/MSI 安装包产出，用真实项目（Python 服务 + GUI 应用）走完整流程，并用安装版验证闭环 | ✅ 已完成 |
 
 ## launcher-core 模块一览
 
@@ -164,6 +225,20 @@ cargo run -p launcher-core --example session_demo -- cmd /c "echo A&echo B&exit 
 ```
 
 示例使用独立的临时 `APP_CATCH_HOME`，不会污染真实的 `~/.app_catch`。
+
+### 真实项目端到端验收
+
+```bash
+# 1) 起一个真实应用（配置放在隔离的 APP_CATCH_HOME 下）
+export APP_CATCH_HOME="E:/repo/app_catch/.e2e/home-python"
+cargo run -p launcher-core --example e2e_session -- \
+    --app-id trendradar-mcp --wait-seconds 20 --expect-ports 3333
+
+# 2) 只凭会话目录复原全过程（不读配置、不读进程表）
+node scripts/session-replay.mjs "$APP_CATCH_HOME/sessions/<session_id>"
+```
+
+完整流程与验收结论见 [docs/E2E.md](docs/E2E.md)。
 
 > 数据隔离：所有测试通过环境变量 `APP_CATCH_HOME` 指向 `tempfile` 临时目录，**绝不触碰真实的 `~/.app_catch`**。
 
