@@ -137,6 +137,29 @@ GUI 闭环驱动完成
 
 安装版在**不设** `APP_CATCH_HOME` 时，也会自动创建 `~/.app_catch` 下的 `apps/`、`icons/`、`sessions/`。
 
+#### 安装版命令层逐一核对
+
+同一 CDP 通道也可以直接调命令层，用于核对「安装版具备 dev 模式的全部能力」。
+在页面上下文里 `window.__TAURI_INTERNALS__.invoke(cmd, args)` 就是前端 `api.ts` 走的那条路径：
+
+| 命令 | 安装版实测返回 |
+| --- | --- |
+| `list_apps` | `[{"id":"charmap","name":"字符映射表",...}]` |
+| `create_app` | 成功创建 `trendradar-installed`（真实 Python 服务配置） |
+| `start_app` | `{"session_id":"ae1fbfd5-…","pid":480820,"state":"running",…}` |
+| `get_session_status` | `latest_status={"window_title":null,"ports":[3334]}` |
+| `read_session_events` | 70 条（start 1 / status 2 / output 67），`skipped_lines=0` |
+| `stop_session` | 返回成功，随后新增 `exit` 事件 |
+| `list_active_sessions` | `[]` |
+| `get_app_icon` | data URL，解码后 256×256 / 48706 字节，PNG 魔数 `89504e470d0a1a0a` |
+| `default_icon` | data URL，256×256 / 3169 字节 |
+| `get_capture_config` | `status_interval_ms=3000`、`max_shards=5` 等默认值 |
+| `recover_sessions` | `{"home":"…","recovered":[],"error":null}` |
+| `app_version` | `0.1.0` |
+
+用安装版新建配置 → 启动 → 采集 → 停止的完整会话，产物与直接用 `e2e_session` 起的一模一样
+（同样是 71 条事件、同样采到监听端口、同样以 `killed` 收尾）。
+
 ## 3. 基线验收标准的自证
 
 `scripts/session-replay.mjs` 只接受一个会话目录路径，**除该目录下的 `events*.jsonl` 外不读任何东西**：

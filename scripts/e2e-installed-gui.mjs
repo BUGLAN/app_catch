@@ -19,6 +19,9 @@
  * 退出码：0 全部成功；1 任一步骤失败（原因打到 stderr）。
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 const args = process.argv.slice(2);
 function arg(name, fallback) {
   const index = args.indexOf("--" + name);
@@ -31,6 +34,10 @@ const port = Number(arg("port", "9223"));
 const appName = arg("app", "");
 const timeoutSec = Number(arg("timeout", "30"));
 const holdSec = Number(arg("hold", "8"));
+/** 截图目录；不传就不截图（默认不写任何文件）。 */
+let shotDir = arg("shot-dir", "");
+if (shotDir) mkdirSync(shotDir, { recursive: true });
+else shotDir = null;
 
 if (!appName) {
   console.error("必须提供 --app <应用名称关键字>");
@@ -164,11 +171,27 @@ const CLICK_STOP = `(() => {
   return { ok: true };
 })()`;
 
+/**
+ * 截图存证（仅在传了 --shot-dir 时执行）。
+ *
+ * 截图是给人看的辅助证据：会话里的 JSONL 才是机器可读的事实来源，
+ * 但「界面确实变成了运行中」只有画面能一次性说清。
+ */
+async function snapshot(cdp, label) {
+  if (!shotDir) return;
+  const result = await cdp.send("Page.captureScreenshot", { format: "png" });
+  const file = join(shotDir, "installed-" + label + ".png");
+  writeFileSync(file, Buffer.from(result.data, "base64"));
+  console.log("截图已保存: " + file);
+}
+
 async function main() {
   const target = await findPageTarget();
   console.log("CDP 已连接: " + target.url + " （" + target.title + "）");
   const cdp = await Cdp.connect(target.webSocketDebuggerUrl);
   await cdp.send("Runtime.enable");
+  // 截图需要 Page 域；只在传了 --shot-dir 时才启用
+  if (shotDir) await cdp.send("Page.enable");
 
   const boot = await cdp.evaluate("document.title");
   console.log("页面标题: " + boot);
@@ -209,6 +232,7 @@ async function main() {
   await sleep(holdSec * 1000);
   const afterHold = await cdp.evaluate(PAGE_STATE);
   console.log("保持 " + holdSec + "s 后页面状态: " + JSON.stringify(afterHold.items));
+  await snapshot(cdp, "running");
 
   const stopped = await cdp.evaluate(CLICK_STOP);
   if (!stopped || !stopped.ok) throw new Error("点击停止失败: " + (stopped && stopped.reason));
@@ -221,6 +245,7 @@ async function main() {
     const now = await cdp.evaluate(PAGE_STATE);
     if (now.items.every((i) => i.badge.trim() !== "运行中")) {
       console.log("停止后页面状态: " + JSON.stringify(now.items));
+      await snapshot(cdp, "stopped");
       fell = true;
       break;
     }
