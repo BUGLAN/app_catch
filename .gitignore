@@ -1,0 +1,30 @@
+# Rust / Cargo
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# 前端
+node_modules/
+dist/
+.vite/
+*.local
+
+# Tauri 构建产物（icons 需保留，仅忽略生成物）
+src-tauri/gen/schemas/
+src-tauri/target/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地环境变量
+.env
+.env.local
+
+# pnpm
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*

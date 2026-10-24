@@ -1,0 +1,12 @@
+[package]
+name = "launcher-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "app_catch 核心逻辑：配置、进程管理、会话 JSONL、图标捕获（不依赖 UI）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

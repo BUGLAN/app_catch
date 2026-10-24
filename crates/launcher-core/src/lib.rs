@@ -1,0 +1,36 @@
+//! app_catch 的核心逻辑 crate。
+//!
+//! 设计约束（来自需求基线「launcher-core 不依赖 UI，可独立测试」）：
+//! - 本 crate 不得依赖 tauri 或任何 GUI 库，保证能在无窗口环境下跑单元测试；
+//! - 配置管理、进程生命周期、会话 JSONL、图标捕获等能力从 M1 起逐步落地；
+//! - 当前处于 M0，仅提供可被 Tauri 命令层调用的占位 API。
+
+/// 返回本 crate 的版本号（取自 Cargo 包元数据）。
+///
+/// M0 阶段用于打通「前端 -> Tauri command -> launcher-core」的完整调用链路。
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// 返回 crate 名，便于界面与日志自描述。
+pub fn crate_name() -> &'static str {
+    env!("CARGO_PKG_NAME")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_is_not_empty() {
+        assert!(!version().is_empty(), "版本号不应为空");
+    }
+
+    #[test]
+    fn version_matches_cargo_metadata() {
+        // 与 Cargo 注入的包版本严格一致，防止后续手写版本号漂移
+        assert_eq!(version(), env!("CARGO_PKG_VERSION"));
+        assert_eq!(crate_name(), "launcher-core");
+        assert!(version().starts_with("0.1."), "M0 基线版本应为 0.1.x");
+    }
+}
