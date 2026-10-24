@@ -1,54 +1,365 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+/**
+ * app_catch 主界面：左侧应用列表 + 右侧详情/会话两栏。
+ *
+ * 状态管理刻意只用一个 `useState` 承载「数据 + 选中态」，
+ * 轮询逻辑集中在 {@link usePolling} 里，组件本身只负责渲染。
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-/** 从 Tauri 宿主获取核心库版本；非 Tauri 环境（纯浏览器预览）返回 null。 */
-async function fetchCoreVersion(): Promise<string | null> {
-  try {
-    return await invoke<string>("core_version");
-  } catch {
-    return null;
-  }
+import { api, isNotHosted, toCommandError } from "./lib/api";
+import type {
+  AppConfig,
+  AppConfigInput,
+  BootReport,
+  CommandError,
+  SessionSnapshot,
+} from "./lib/types";
+import { AppDetail } from "./components/AppDetail";
+import { AppForm } from "./components/AppForm";
+import { AppList } from "./components/AppList";
+import { SessionDetail } from "./components/SessionDetail";
+import { Toast, type ToastMessage } from "./components/Toast";
+
+/** 表单的编辑目标：新建（null）或已有应用。 */
+type FormTarget = AppConfig | null;
+
+/** 一次删除确认的上下文。 */
+interface DeleteTarget {
+  app: AppConfig;
 }
 
 export default function App() {
-  const [coreVersion, setCoreVersion] = useState<string | null>(null);
-  const [hosted, setHosted] = useState<boolean>(false);
+  const [apps, setApps] = useState<AppConfig[]>([]);
+  const [sessions, setSessions] = useState<SessionSnapshot[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedSession, setSelectedSession] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchCoreVersion().then((v) => {
-      setCoreVersion(v);
-      setHosted(v !== null);
-    });
+  const [formTarget, setFormTarget] = useState<FormTarget | undefined>(undefined);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [boot, setBoot] = useState<BootReport | null>(null);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  const toastSeq = useRef(0);
+
+  const pushToast = useCallback((error: CommandError | string) => {
+    const message = typeof error === "string" ? error : error.message;
+    toastSeq.current += 1;
+    const id = toastSeq.current;
+    setToasts((prev) => prev.concat({ id, message }));
   }, []);
 
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }, []);
+
+  /** 统一包装一次可能失败的操作：捕获错误 -> toast -> 返回是否成功。 */
+  const run = useCallback(
+    async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
+      try {
+        return await action();
+      } catch (raw) {
+        const error = toCommandError(raw);
+        pushToast(isNotHosted(error) ? "请在 Tauri 窗口中使用（pnpm tauri dev）" : error.message);
+        return undefined;
+      }
+    },
+    [pushToast]
+  );
+
+  /** 拉取应用列表与活跃会话。 */
+  const refresh = useCallback(async () => {
+    const list = await run(() => api.listApps());
+    if (list) {
+      setApps(list);
+      setSelectedId((current) => {
+        if (current && list.some((app) => app.id === current)) {
+          return current;
+        }
+        return list.length > 0 ? list[0]!.id : null;
+      });
+    }
+    const active = await run(() => api.listActiveSessions());
+    if (active) {
+      setSessions(active);
+    }
+  }, [run]);
+
+  // 首屏：恢复残留会话 + 拉列表
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const report = await run(() => api.recoverSessions());
+      if (!cancelled && report) {
+        setBoot(report);
+        if (report.error) {
+          pushToast(`恢复会话失败：${report.error}`);
+        }
+      }
+      await refresh();
+      if (!cancelled) {
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // refresh/run 是 useCallback 稳定引用，这里只跑一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 会话列表轮询：运行中 1s，全部退出后放慢到 3s
+  useEffect(() => {
+    let timer: number | undefined;
+    let cancelled = false;
+
+    const tick = async () => {
+      if (document.visibilityState === "visible") {
+        const active = await run(() => api.listActiveSessions());
+        if (!cancelled && active) {
+          setSessions(active);
+        }
+      }
+      if (cancelled) {
+        return;
+      }
+      const running = sessions.filter((s) => s.state === "running").length;
+      timer = window.setTimeout(tick, running > 0 ? 1000 : 3000);
+    };
+
+    timer = window.setTimeout(tick, 1000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [run, sessions]);
+
+  const selectedApp = useMemo(
+    () => apps.find((app) => app.id === selectedId) ?? null,
+    [apps, selectedId]
+  );
+
+  const appSessions = useMemo(() => {
+    if (!selectedApp) {
+      return [];
+    }
+    return sessions.filter((session) => session.app_id === selectedApp.id);
+  }, [sessions, selectedApp]);
+
+  const activeSession = useMemo(
+    () => appSessions.find((session) => session.session_id === selectedSession) ?? null,
+    [appSessions, selectedSession]
+  );
+
+  // 选中的应用变了：默认选中它的第一个活跃会话
+  useEffect(() => {
+    setSelectedSession((current) => {
+      if (current && appSessions.some((session) => session.session_id === current)) {
+        return current;
+      }
+      return appSessions.length > 0 ? appSessions[0]!.session_id : null;
+    });
+  }, [appSessions]);
+
+  const handleStart = useCallback(
+    async (app: AppConfig) => {
+      setBusy(true);
+      const snapshot = await run(() => api.startApp(app.id));
+      setBusy(false);
+      if (snapshot) {
+        setSessions((prev) => prev.concat(snapshot));
+        setSelectedId(app.id);
+        setSelectedSession(snapshot.session_id);
+      }
+    },
+    [run]
+  );
+
+  const handleStop = useCallback(
+    async (sessionId: string) => {
+      setBusy(true);
+      const done = await run(() => api.stopSession(sessionId));
+      setBusy(false);
+      if (done !== undefined) {
+        // 停止后立刻刷新一次，让状态徽标马上回落到「已退出」
+        const active = await run(() => api.listActiveSessions());
+        if (active) {
+          setSessions(active);
+        }
+      }
+    },
+    [run]
+  );
+
+  const handleRestart = useCallback(
+    async (sessionId: string, appId: string) => {
+      setBusy(true);
+      const snapshot = await run(() => api.restartSession(sessionId, appId));
+      setBusy(false);
+      if (snapshot) {
+        setSessions((prev) => prev.concat(snapshot));
+        setSelectedSession(snapshot.session_id);
+      }
+    },
+    [run]
+  );
+
+  const handleSave = useCallback(
+    async (input: AppConfigInput, isNew: boolean) => {
+      setBusy(true);
+      const saved = await run(() =>
+        isNew ? api.createApp(input) : api.updateApp(input)
+      );
+      setBusy(false);
+      if (saved) {
+        await refresh();
+        setSelectedId(saved.id);
+        setFormTarget(undefined);
+        pushToast(isNew ? `已创建应用「${saved.name}」` : `已保存应用「${saved.name}」`);
+      }
+    },
+    [pushToast, refresh, run]
+  );
+
+  const handleDelete = useCallback(async () => {
+    if (!deleteTarget) {
+      return;
+    }
+    setBusy(true);
+    const done = await run(() => api.deleteApp(deleteTarget.app.id));
+    setBusy(false);
+    setDeleteTarget(null);
+    if (done !== undefined) {
+      await refresh();
+      pushToast(`已删除应用「${deleteTarget.app.name}」`);
+    }
+  }, [deleteTarget, pushToast, refresh, run]);
+
+  const editing = formTarget !== undefined;
+
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1 className="app-title">app_catch</h1>
-        <p className="app-subtitle">开发者向桌面应用启动器</p>
+    <div className="shell">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">ac</span>
+          <div className="brand-text">
+            <strong>app_catch</strong>
+            <span className="brand-sub">开发者向应用启动器</span>
+          </div>
+        </div>
+
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setFormTarget(null)}
+            disabled={busy}
+          >
+            + 新建应用
+          </button>
+        </div>
       </header>
 
-      <section className="card">
-        <h2>骨架状态</h2>
-        <dl className="kv">
-          <dt>应用名称</dt>
-          <dd>app_catch</dd>
-          <dt>launcher-core 版本</dt>
-          <dd>{coreVersion ?? "（未连接到 Tauri 宿主）"}</dd>
-          <dt>运行环境</dt>
-          <dd>{hosted ? "Tauri 桌面窗口" : "浏览器预览模式"}</dd>
-          <dt>当前里程碑</dt>
-          <dd>M0 仓库初始化与脚手架</dd>
-        </dl>
-      </section>
+      <div className="body">
+        <aside className="sidebar">
+          <div className="sidebar-head">
+            <span>应用</span>
+            <span className="count">{apps.length}</span>
+          </div>
+          {loading ? (
+            <p className="sidebar-hint">加载中…</p>
+          ) : (
+            <AppList
+              apps={apps}
+              sessions={sessions}
+              selectedId={selectedId}
+              onSelect={(app) => {
+                setSelectedId(app.id);
+                setFormTarget(undefined);
+              }}
+              onStart={handleStart}
+              busy={busy}
+            />
+          )}
+        </aside>
 
-      <section className="card muted">
-        <h2>下一步</h2>
-        <p>
-          M1 起将在 launcher-core 中实现应用配置管理、进程启动、会话 JSONL
-          捕获与进程树回收；本页面目前仅用于验证前后端链路是否打通。
-        </p>
-      </section>
-    </main>
+        <main className="main">
+          {editing && formTarget !== undefined ? (
+            <AppForm
+              initial={formTarget}
+              busy={busy}
+              onSubmit={(input, isNew) => handleSave(input, isNew)}
+              onCancel={() => setFormTarget(undefined)}
+            />
+          ) : formTarget === null ? (
+            <AppForm
+              initial={null}
+              busy={busy}
+              onSubmit={(input, isNew) => handleSave(input, isNew)}
+              onCancel={() => setFormTarget(undefined)}
+            />
+          ) : selectedApp ? (
+            <div className="detail-stack">
+              <AppDetail
+                app={selectedApp}
+                sessions={appSessions}
+                selectedSession={activeSession?.session_id ?? null}
+                busy={busy}
+                onStart={() => handleStart(selectedApp)}
+                onStop={handleStop}
+                onRestart={handleRestart}
+                onEdit={() => setFormTarget(selectedApp)}
+                onDelete={() => setDeleteTarget({ app: selectedApp })}
+                onSelectSession={setSelectedSession}
+              />
+              {activeSession ? (
+                <SessionDetail
+                  key={activeSession.session_id}
+                  session={activeSession}
+                  allSessions={sessions}
+                />
+              ) : (
+                <p className="empty-panel">该应用当前没有运行中的会话。</p>
+              )}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <h2>还没有任何应用</h2>
+              <p>app_catch 不做自动发现，应用需要手动录入。</p>
+              <button type="button" className="btn btn-primary" onClick={() => setFormTarget(null)}>
+                + 新建第一个应用
+              </button>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {deleteTarget ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3>确认删除</h3>
+            <p>
+              将删除应用配置「<strong>{deleteTarget.app.name}</strong>」（id: {deleteTarget.app.id}）。
+            </p>
+            <p className="modal-note">已有会话目录与日志不会被删除，仍可在 sessions 目录中查看。</p>
+            <div className="modal-actions">
+              <button type="button" className="btn" onClick={() => setDeleteTarget(null)}>
+                取消
+              </button>
+              <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={busy}>
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <Toast toasts={toasts} onDismiss={dismissToast} />
+
+      {boot?.error ? <span className="sr-only">{boot.home}</span> : null}
+    </div>
   );
 }
