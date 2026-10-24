@@ -47,8 +47,49 @@
   同一文件内允许不同版本的行共存，读取方按行内 `v` 分派解析；
 - 已知事件类型不变，新增事件类型用新的 `event` 取值；旧读取方遇到未知 `event` 应跳过该行；
 - 会话目录与文件名（`sessions/<session_id>/events.jsonl`）**不随版本变化**；
-- 日志轮转（单会话上限默认 50MB、保留最近 N 片，需求基线 F3）会以**额外分片文件**出现，
-  分片命名与切换规则在 M1b 实现时补入本文档，不影响单文件行格式。
+- 日志轮转会以**额外分片文件**出现（见下节），不影响单文件行格式。
+
+## 日志轮转与分片
+
+单会话日志体积上限默认 **50MB**，可通过 `LogWriterConfig::max_file_bytes` 配置。超过上限时按以下规则切换分片：
+
+| 项 | 规则 |
+| --- | --- |
+| 活跃片 | 恒为 `events.jsonl`，新事件始终追加到这里 |
+| 分片命名 | `events.<seq>.jsonl`，`seq` 从 **1** 开始递增（`events.1.jsonl`、`events.2.jsonl`…） |
+| 切换时机 | 写入某行**之前**若会超限，则先把当前活跃片改名为分片，再新建空的活跃片 |
+| 保留策略 | 只保留最近 **N=5** 个分片（可配），超出时删除最旧的；删除失败只记录不中断 |
+| 行完整性 | 轮转只发生在两次写入之间，**任何分片的最后一行都是完整 JSON** |
+
+读取一个会话的完整事件流时，应按 `seq` 升序读取全部分片，最后读活跃片 `events.jsonl`。
+工具函数 `launcher_core::runtime::shard_file_name(seq)` 给出分片文件名。
+
+## 溢出（overflow）语义
+
+输出捕获走「读管道 → 有界 channel → 串行写盘」，channel 默认容量 8192 行。
+当写盘速度跟不上、channel 满时，读取方**绝不阻塞子进程**，而是丢弃当前行并累计计数，
+随后补写 `overflow` 事件：
+
+- `dropped` 是该条 `overflow` 事件覆盖的丢弃行数（可能累计多条）；
+- 出现 `overflow` 即表示**该时间点附近的输出不完整**，分析时必须说明；
+- 正常负载下 `dropped` 恒为 0，`overflow` 事件不会出现。
+
+## 会话重关联（recover）语义
+
+启动器重启后，`SessionManager::recover_sessions()` 会扫描 `sessions/` 下每个会话目录，
+解析事件流，找出**有 `start` 无 `exit`** 的会话，用 `start` 里的 `pid` + `start_time` 调用 `attach`：
+
+| 判定 | 处理 |
+| --- | --- |
+| pid 存活且 `start_time` 一致 | 标记为 running，追加一条 `status(state=running)` 事件 |
+| 进程不存在 | 追加 `exit(code=null, reason=crashed)`，会话收尾 |
+| `start_time` 不一致（**PID 已被复用**） | 同上：追加 `exit(code=null, reason=crashed)`，绝不误认 |
+| `start_time` 为 0（旧事件） | 视为无法判定身份，按已消失处理，追加 `exit(crashed)` |
+
+> **已知限制**：重启启动器后**无法重新接管**已有进程的 stdout/stderr ——
+> 管道句柄随父进程消失，新进程无法再读取旧进程的输出。
+> 这些会话的日志会停在重启前的位置，重关联后也不会再追加新的 `output` 事件。
+> 详见 [RUNTIME.md](./RUNTIME.md)。
 
 ## 各事件字段
 
@@ -68,6 +109,7 @@
 | `argv` | string[] | ✅ | 完整参数向量（含 argv[0]），可精确还原启动方式 |
 | `pid` | number | ✅ | 子进程 pid |
 | `ppid` | number | ✅ | 启动器自身 pid |
+| `start_time` | number | ✅ | 子进程启动时间的平台原始值（Windows 为 FILETIME，100ns 粒度）。与 `pid` 一起构成进程身份，用于重启后判定 PID 是否被复用；旧事件缺省为 `0`，表示无法重关联 |
 
 ### output
 
@@ -114,7 +156,7 @@
 下面 9 行覆盖了全部事件形态（真实文件里 `output` 会有成百上千行）：
 
 ```jsonl
-{"event":"start","v":1,"ts":"2026-10-24T18:30:00.123456789Z","session_id":"e6b562fe-91e5-45f3-8a34-8c42e0be9cef","app_id":"gpt-sovits","cmd":"python main.py --port 9880","cwd":"E:/repo/GPT-SoVITS","argv":["python","main.py","--port","9880"],"pid":4321,"ppid":1234}
+{"event":"start","v":1,"ts":"2026-10-24T18:30:00.123456789Z","session_id":"e6b562fe-91e5-45f3-8a34-8c42e0be9cef","app_id":"gpt-sovits","cmd":"python main.py --port 9880","cwd":"E:/repo/GPT-SoVITS","argv":["python","main.py","--port","9880"],"pid":4321,"ppid":1234,"start_time":134000000000000000}
 {"event":"output","v":1,"ts":"2026-10-24T18:30:01.000000000Z","stream":"stdout","line":"Running on local URL: http://127.0.0.1:9880"}
 {"event":"output","v":1,"ts":"2026-10-24T18:30:02.000000000Z","stream":"stderr","line":"warning: torch not found, fallback to CPU"}
 {"event":"status","v":1,"ts":"2026-10-24T18:30:03.000000000Z","state":"running","window_title":"GPT-SoVITS","ports":[9880]}

@@ -79,6 +79,7 @@ fn doc_events() -> Vec<SessionEvent> {
             ],
             pid: 4321,
             ppid: 1234,
+            start_time: 134_000_000_000_000_000,
         },
         SessionEvent::Output {
             v: SESSION_EVENT_VERSION,
@@ -175,7 +176,7 @@ fn docs_are_linked_from_readme() {
     )
     .expect("读取 README.md 失败");
 
-    for link in ["docs/CONFIG.md", "docs/SESSION_FORMAT.md"] {
+    for link in ["docs/CONFIG.md", "docs/SESSION_FORMAT.md", "docs/RUNTIME.md"] {
         assert!(readme.contains(link), "README.md 应链接 {link}");
     }
 }
