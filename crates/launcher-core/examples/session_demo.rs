@@ -81,20 +81,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("退出: code={:?} reason={}", exit.code, exit.reason.as_str());
     println!();
 
-    // 5) 读回产物：事件条数与 JSONL 尾部
+    // 5) 读回产物：先等后台收尾把 exit 事件写进去，再按「分片 seq 升序 + 活跃片」读全量
     let dir = manager.session_dir(&session.session_id);
     let log_path = dir.join("events.jsonl");
-    // 进程退出的收尾是后台任务，稍等它把 exit 事件写进去
-    let mut text = String::new();
     for _ in 0..100 {
-        text = std::fs::read_to_string(&log_path).unwrap_or_default();
-        if text.contains("\"event\":\"exit\"") {
+        let active = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if active.contains("\"event\":\"exit\"") {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    // 轮转后的会话必须跨文件读取：分片按 seq 升序在前，活跃片在最后
+    let mut shards: Vec<(u32, std::path::PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix("events.") else {
+            continue;
+        };
+        let Some(seq_text) = rest.strip_suffix(".jsonl") else {
+            continue;
+        };
+        let Ok(seq) = seq_text.parse::<u32>() else {
+            continue;
+        };
+        shards.push((seq, entry.path()));
+    }
+    shards.sort_by_key(|(seq, _)| *seq);
+
+    let mut ordered: Vec<std::path::PathBuf> = shards.iter().map(|(_, p)| p.clone()).collect();
+    ordered.push(log_path.clone());
+
+    let mut lines: Vec<String> = Vec::new();
+    for path in &ordered {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        for line in text.lines() {
+            if !line.trim().is_empty() {
+                lines.push(line.to_string());
+            }
+        }
+    }
+
     let mut outputs = 0usize;
     let mut parse_errors = 0usize;
     for line in &lines {
@@ -105,18 +133,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("事件总数 = {}（其中 output {} 条）", lines.len(), outputs);
-    println!("不可解析行 = {parse_errors}");
-    // 轮转分片也一并展示
-    let mut shards: Vec<String> = std::fs::read_dir(&dir)?
+    let mut files: Vec<String> = std::fs::read_dir(&dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with("events."))
+        .filter(|n| n.starts_with("events"))
         .collect();
-    shards.sort();
-    println!("会话目录文件 = {shards:?}");
+    files.sort();
+    println!("事件总数 = {}（跨 {} 个文件，其中 output {} 条）", lines.len(), files.len(), outputs);
+    println!("不可解析行 = {parse_errors}");
+    println!("会话目录文件 = {files:?}");
     println!();
-    println!("---- JSONL 尾部（最多 8 行）----");
+    println!("---- JSONL 尾部（最多 8 行；来自活跃片）----");
     let tail = lines.len().saturating_sub(8);
     for line in &lines[tail..] {
         println!("{line}");
