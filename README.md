@@ -2,21 +2,24 @@
 
 开发者向的桌面应用启动器：把 E:\repo 下的自开发应用收进可管理列表，一键启动，并把每个会话的进程信息、运行状态与 stdout/stderr 全量捕获为结构化 JSONL，供 AI agent 直接读取。
 
-> 当前进度：**M1 核心完成，状态增强待做**。配置管理、路径布局、会话事件模型、Windows 进程后端（Job Object 杀树）、输出捕获与 JSONL 轮转、会话管理器与重启重关联均已落地并有真实子进程测试覆盖；窗口标题与监听端口采集（M1c）待做。界面仍是 M0 的状态页。
+> 当前进度：**M2 完成，GUI 可用**。配置管理、路径布局、会话事件模型、Windows 进程后端（Job Object 杀树）、输出捕获与 JSONL 轮转、会话管理器与重启重关联、窗口标题与监听端口采集均已落地；M2 在此之上加了完整 GUI：应用列表、启动/停止/重启、会话详情（实时日志流、状态条、退出信息）。
 >
 > 输出捕获按「严格 UTF-8 → Windows GBK(cp936) 回退 → lossy 标记」逐行解码，GBK 中文日志无损保真；每行带 `encoding` 标记，详见 [docs/SESSION_FORMAT.md](docs/SESSION_FORMAT.md)。
+>
+> GUI 的界面结构、命令层 API 与轮询策略见 [docs/GUI.md](docs/GUI.md)。
 
 ## 目录架构
 
 | 路径 | 说明 |
 | --- | --- |
 | `crates/launcher-core/` | 纯 Rust 核心库：配置管理、进程生命周期、会话 JSONL、图标捕获。**不依赖 tauri 或任何 UI 库**，可在无窗口环境下独立测试。 |
-| `src-tauri/` | Tauri 2 壳层：`src/lib.rs` 为 command 薄封装层，业务一律委托给 launcher-core；`tauri.conf.json` 为 v2 schema 配置；`capabilities/` 为权限声明。 |
-| `src/` | 前端（React + TypeScript + Vite）：M0 只有一个状态页，通过 `invoke` 调用 Tauri command 展示 launcher-core 版本号。 |
+| `src-tauri/` | Tauri 2 壳层：`src/lib.rs` 注册命令并初始化状态；`src/commands.rs` 是命令薄封装（业务一律委托 launcher-core）；`src/events_reader.rs` 做会话事件的分片合并与增量读取。 |
+| `src/` | 前端（React + TypeScript + Vite）：两栏布局（应用列表 + 详情/会话），深色高密度主题，纯 CSS 无 UI 库。 |
 | `docs/REQUIREMENTS.md` | 需求与决策基线（与仓库根 `PROMPT.md` 内容完全一致）。 |
 | `docs/CONFIG.md` | 应用配置 TOML 格式：字段表、默认值、存储位置、错误语义。 |
 | `docs/SESSION_FORMAT.md` | 会话 JSONL 事件格式：五类事件字段表、示例行、版本演进策略、轮转分片与溢出/重关联语义。 |
 | `docs/RUNTIME.md` | 会话运行时：生命周期状态机、`SessionManager` API、退出分类、捕获/轮转策略、Windows 后端实现与已知限制。 |
+| `docs/GUI.md` | **M2**：界面结构、命令层 API 一览、轮询策略、分片读取与边写边读的安全性、已知限制。 |
 | `Cargo.toml` | cargo workspace 根，成员为 `crates/launcher-core` 与 `src-tauri`，公共依赖集中在 `[workspace.dependencies]`。 |
 
 ## 前置依赖
@@ -38,7 +41,10 @@ pnpm tauri dev
 # 仅构建前端产物（tsc 类型检查 + vite build，输出到 dist/）
 pnpm build
 
-# Rust 侧检查与测试（含 launcher-core 单元测试）
+# 前端纯逻辑单测（vitest）
+pnpm test
+
+# Rust 侧检查与测试（含 launcher-core 单元测试与命令层集成测试）
 cargo check --workspace
 cargo test --workspace
 
@@ -48,13 +54,71 @@ pnpm tauri build
 
 > `pnpm tauri dev` / `pnpm tauri build` 依赖 `dist/` 与 Vite 端口 5173（`vite.config.ts` 中 `strictPort` 已锁定，避免端口漂移导致白屏）。
 
+## 如何运行 GUI
+
+### 步骤
+
+1. **首次准备**：安装 Rust stable、Node 20+、pnpm，Windows 上还需 MSVC 生成工具与 WebView2 运行时。
+2. **安装前端依赖**：
+
+   ```bash
+   cd E:\repo\app_catch
+   pnpm install
+   ```
+
+3. **启动开发窗口**：
+
+   ```bash
+   pnpm tauri dev
+   ```
+
+   该命令会先跑 Vite（http://localhost:5173），再编译 Rust 并拉起 Tauri 窗口（1024×720，深色主题）。
+   首次编译 Rust 依赖需要几分钟，之后是增量编译。
+
+4. **数据位置**：应用配置与会话日志默认写在 `~/.app_catch`；要换位置，启动前设置环境变量：
+
+   ```powershell
+   $env:APP_CATCH_HOME = 'E:\repo\app_catch-data'
+   pnpm tauri dev
+   ```
+
+   ```bash
+   # Git Bash / WSL
+   APP_CATCH_HOME=/e/repo/app_catch-data pnpm tauri dev
+   ```
+
+5. **首次打开是空的**：app_catch 不做自动发现，需要手动录入。点右上角「+ 新建应用」。
+
+### 手动验收步骤（1024×720 窗口）
+
+| # | 操作 | 预期 |
+| --- | --- | --- |
+| 1 | 启动后看主区 | 显示「还没有任何应用 / app_catch 不做自动发现，应用需要手动录入」+ 新建按钮 |
+| 2 | 点「+ 新建应用」，id 输入 `bad id` | id 下方实时红字：`id 只允许 A-Z a-z 0-9 _ -`，保存按钮不可点 |
+| 3 | id 改 `demo`，名称 `演示`，命令 `cmd`，参数框填两行：`/c` 与 `echo hello & ping 127.0.0.1 -n 6 > nul`，保存 | toast「已创建应用「演示」」，左侧列表出现带首字头像的条目，右侧显示拼接后的命令行 |
+| 4 | 点「启动」 | 会话表出现一行：状态徽标变「运行中」；下方会话详情状态条显示会话 id、PID、启动时间；日志流出现分隔行「会话开始」与 `hello` 输出行 |
+| 5 | 观察 3~5 秒 | 日志窗口出现分隔行「状态 运行中」；约 6 秒后进程退出，出现分隔行「进程已退出 · 退出码 0 · 正常退出」 |
+| 6 | 点「最近事件」 | 表格列出 start / output / status / exit 的结构化字段，时间列为 `HH:MM:SS.mmm` |
+| 7 | 切回「实时日志」，在日志区上滚 | 「自动滚底」复选框自动取消勾选；滚回底部后重新勾上 |
+| 8 | 再点一次「启动」（多实例） | 会话表出现第二行；两行各自有「停止」按钮 |
+| 9 | 对一个运行中的会话点「停止」 | 该会话状态变「已退出」，日志末尾出现「退出码 … · 被停止」 |
+| 10 | 点「编辑」，改名称为「演示2」，保存 | 列表与详情标题同步更新 |
+| 11 | 点「删除」 | 弹出二次确认，说明只删配置不删会话目录；确认后列表移除，toast 提示已删除 |
+| 12 | 重新点「启动」后关掉窗口，再跑一次 `pnpm tauri dev` | 首屏调用 `recover_sessions`；残留会话出现在会话表中，日志从已落盘文件继续显示 |
+
+### 验证 lossy 与 overflow 的显式提示（可选）
+
+这两类事件平时不常见，可直接构造会话目录验证渲染：在 `~/.app_catch/sessions/<uuid>/events.jsonl` 里写入
+带 `"encoding":"lossy"` 的 output 事件与一条 `overflow` 事件（字段见 [docs/SESSION_FORMAT.md](docs/SESSION_FORMAT.md)），
+预期：`lossy` 行淡橙底 + 「编码损坏」徽标；overflow 渲染成橙色提示条「有 N 行输出因写入滞后被丢弃」；stderr 行红色。
+
 ## 里程碑进度
 
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
 | M0 | 仓库初始化：cargo workspace + Tauri 2 脚手架，cargo check/test 全绿，需求基线入库，README 写清构建方式 | ✅ 已完成 |
-| M1 | launcher-core（Windows 先行）：F1 配置、F2 启动、F3 捕获 + JSONL + 轮转、F4 停止与进程树回收 | ✅ 核心完成（窗口标题/端口采集待做） |
-| M2 | GUI：应用列表（图标/名称/状态）、启动/停止/重启、会话详情（实时日志流、状态、退出信息） | ⏳ 待做 |
+| M1 | launcher-core（Windows 先行）：F1 配置、F2 启动、F3 捕获 + JSONL + 轮转、F4 停止与进程树回收、窗口标题与监听端口采集 | ✅ 已完成 |
+| M2 | GUI：应用列表（图标/名称/状态）、启动/停止/重启、会话详情（实时日志流、状态、退出信息） | ✅ 已完成 |
 | M3 | 图标：Windows 抓取 + 缓存 + 兜底 | ⏳ 待做 |
 | M4 | macOS 对齐：构建通过、进程组语义、图标抓取 | ⏳ 待做 |
 | M5 | 打包与端到端验收：用真实项目（Python 服务 + GUI 应用）走完整流程 | ⏳ 待做 |
@@ -70,6 +134,19 @@ pnpm tauri build
 | `runtime` | `SessionManager` 门面、输出捕获管线、JSONL 写入与轮转 | [docs/RUNTIME.md](docs/RUNTIME.md) |
 | `error` / `fsutil` | 统一错误类型 `AppCatchError` 与原子写盘工具 | 见源码 rustdoc |
 
+## src-tauri 模块一览
+
+| 模块 | 内容 |
+| --- | --- |
+| `lib.rs` | `setup` 里初始化共享状态并注册全部命令；不含业务逻辑 |
+| `commands.rs` | 命令薄封装：解析入参 → 调 launcher-core → 转 DTO，错误统一为中文 |
+| `app_state.rs` | `AppStore` / `Arc<SessionManager>` / `CaptureConfig` / 事件读取器的托管 |
+| `dto.rs` | 命令层 DTO 与 `AppConfigInput` 校验（宽进严出，中文提示） |
+| `error.rs` | `AppCatchError` → `{ kind, message }`，8 个变体映射到稳定分类 |
+| `events_reader.rs` | 会话事件分片合并、增量游标、边写边读安全、两级缓存 |
+
+命令层 API 一览见 [docs/GUI.md](docs/GUI.md) 的「命令层 API」一节。
+
 ### 手动验收示例
 
 ```bash
@@ -83,6 +160,15 @@ cargo run -p launcher-core --example session_demo -- cmd /c "echo A&echo B&exit 
 示例使用独立的临时 `APP_CATCH_HOME`，不会污染真实的 `~/.app_catch`。
 
 > 数据隔离：所有测试通过环境变量 `APP_CATCH_HOME` 指向 `tempfile` 临时目录，**绝不触碰真实的 `~/.app_catch`**。
+
+## 测试
+
+| 层 | 命令 | 覆盖 |
+| --- | --- | --- |
+| launcher-core | `cargo test -p launcher-core` | 配置、路径、会话事件、日志轮转、捕获管线、会话管理器、状态采集 |
+| src-tauri 单元 | `cargo test -p app-catch --lib` | 错误转换、DTO 校验、事件分片读取（含半行/轮转/裁剪） |
+| src-tauri 集成 | `cargo test -p app-catch --test session_events` | 真实进程跑出真实分片，分页游标与直读结果逐条比对 |
+| 前端 | `pnpm test` | 日志行转换、游标推进、lossy 判定、自动滚底、表单解析 |
 
 ## 约定
 
