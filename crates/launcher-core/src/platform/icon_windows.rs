@@ -34,6 +34,9 @@
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows_sys::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+};
 use windows_sys::Win32::Graphics::Gdi::{
     BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
     DeleteObject, GetDC, GetDIBits, GetObjectW, HDC, HBITMAP, HGDIOBJ, ReleaseDC,
@@ -175,6 +178,73 @@ impl Drop for ScreenDc {
         // SAFETY: DC 由 GetDC(NULL) 获得，必须用 ReleaseDC(NULL, ...) 归还。
         unsafe {
             ReleaseDC(std::ptr::null_mut(), self.0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// COM 初始化
+// ---------------------------------------------------------------------------
+
+/// 串行化 Shell 图标 API 的进程级互斥锁。
+///
+/// **为什么需要**（实测结论）：`SHGetFileInfoW` 解析 `.lnk` 时会走 Shell 的
+/// 链接解析链路，并发调用在高线程数下会**稳定失败**（本机实测：并发 ≤6 线程
+/// 全成功，≥8 线程必现一次失败，且与路径字符串无关）。
+/// 失败是静默的（返回 0 / 空 hIcon），调用方无从区分「这文件真没图标」
+/// 与「这次撞上了并发缺陷」。
+///
+/// 代价可以忽略：图标每个应用只抓一次，之后都走磁盘缓存；
+/// 真正需要抓取的次数是「应用个数」量级，而不是请求量级。
+/// 用一次串行化换掉一整类不确定性，是明显划算的交易。
+///
+/// 锁中毒按「继续用」处理：图标抓取失败不影响正确性，没必要因为
+/// 别的线程 panic 过就让后续所有抓取都失败。
+static ICON_API_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 保证当前线程处于 STA 的 RAII 守卫。
+///
+/// 为什么需要：**解析 `.lnk` 走的是 COM**（Shell Link 对象）。
+/// 线程没有初始化 COM 时 `SHGetFileInfoW` 对快捷方式**直接返回 0**，
+/// 拿不到任何 hIcon。这个问题在多线程并发时必现（集成测试里稳定复现），
+/// 而命令层正是把图标抓取放在 `spawn_blocking` 的线程池上跑的——
+/// 那些 worker 线程的 COM 状态不受我们控制，因此**必须在抓取入口自己保证**。
+///
+/// 释放语义按 COM 的约定处理：
+/// - `S_OK`（0，我们初始化的）与 `S_FALSE`（1，别人已初始化）都要 `CoUninitialize`；
+/// - `RPC_E_CHANGED_MODE`（0x80010106，线程已在别的 apartment）**不能**反初始化；
+/// - 其它失败码：本次就没初始化成功，同样不反初始化。
+///
+/// 失败不算错误：拿不到 COM 只是「Shell 档位可能失效」，图标抓取仍然尽力而为。
+struct ComApartment {
+    /// 本线程是否需要在 Drop 时调用 CoUninitialize。
+    needs_uninit: bool,
+}
+
+impl ComApartment {
+    /// 在当前线程尝试进入 STA；无论成败都返回守卫（失败时内部标记为无需释放）。
+    fn enter() -> Self {
+        // SAFETY: 标准 COM 初始化调用；null 表示使用默认的进程级安全设置。
+        let hr = unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+            )
+        };
+        Self {
+            // S_OK 与 S_FALSE 都要求配对调用 CoUninitialize
+            needs_uninit: hr >= 0,
+        }
+    }
+}
+
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        if self.needs_uninit {
+            // SAFETY: 与上面成功的 CoInitializeEx 严格配对，且只调用一次。
+            unsafe {
+                CoUninitialize();
+            }
         }
     }
 }
@@ -348,9 +418,23 @@ fn icon_from_window(hwnd: HWND) -> Option<RgbaImage> {
 // ---------------------------------------------------------------------------
 
 /// 把路径转成 NUL 结尾的 UTF-16 序列；空路径返回空 Vec。
+///
+/// **必须把 `/` 换成 `\\`**：这是实测踩出来的坑——
+/// `SHGetFileInfoW` 对正斜杠路径直接返回 0（拿不到 hIcon），
+/// 而本项目里用户填的路径到处都是正斜杠（`C:/Program Files/App/app.exe`、
+/// `E:/repo/GPT-SoVITS/main.py` 这种写法在文档与配置示例里就是主流）。
+/// `PrivateExtractIconsW` 对正斜杠宽容一些，因此这个 bug 只在
+/// 「exe 档位失败、回落到 Shell 档位」时才暴露——正是 .lnk 的场景。
+///
+/// 其余字节原样保留：不做大小写规范化，也不做路径简写展开，
+/// 因为这些都不该由图标抓取来决定。
 fn to_wide(path: &Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
-    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let mut wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .map(|unit| if unit == u16::from(b'/') { u16::from(b'\\') } else { unit })
+        .collect();
     if wide.is_empty() {
         return wide;
     }
@@ -418,7 +502,12 @@ fn shell_icon(path_wide: &[u16]) -> Option<RgbaImage> {
 }
 
 /// 从 exe/ico/lnk 文件抓图标：PrivateExtractIconsW（多档尺寸） -> ExtractIconExW -> Shell。
+///
+/// 入口处先把当前线程置入 STA：`.lnk` 的解析依赖 COM，未初始化时 Shell 档位必失败。
 fn icon_from_file(path: &Path) -> Option<RgbaImage> {
+    // 先拿进程级锁再初始化 COM：两者顺序固定，避免与其他线程交错
+    let _guard = ICON_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _com = ComApartment::enter();
     let wide = to_wide(path);
     if wide.is_empty() {
         return None;
@@ -501,7 +590,7 @@ impl IconSource for WindowsIconCapture {
     /// 三档之间是「失败即继续」而不是「失败即放弃」：
     /// 用户填了一个已被删除的图标路径，不该连带让 exe 图标也抓不到。
     fn produce(&self, target: &IconTarget) -> Option<RgbaImage> {
-        // 1) 用户自定义图标
+        // 1) 用户自定义图标（file_icon 内部会拿 ICON_API_LOCK）
         if let Some(custom) = target.custom_icon.as_deref() {
             if let Some(image) = file_icon(custom) {
                 return Some(image);

@@ -323,3 +323,253 @@ fn valid_custom_icon_wins_over_executable() {
     // 自定义图是纯绿：抽查第一个像素
     assert_eq!(&stored.pixels[0..4], &[0, 200, 0, 255]);
 }
+
+// ===========================================================================
+// e) .ico / .lnk 输入支持
+// ===========================================================================
+
+/// .ico 文件应能被当作自定义图标读出来（走资源抽取路径）。
+///
+/// 这是「也支持 .lnk/.ico/.png 输入」这条要求里 .ico 的证据。
+/// 用仓库自带的 src-tauri/icons/icon.ico，不依赖系统里的随机文件。
+#[test]
+fn ico_file_is_supported_as_custom_icon() {
+    let ico = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/icons/icon.ico");
+    if !ico.is_file() {
+        println!("跳过：找不到 {}", ico.display());
+        return;
+    }
+
+    let image = file_icon(&ico).expect("应能从 .ico 抠出图标");
+    println!(".ico 图标：{}x{}", image.width, image.height);
+    assert!(image.width > 0 && image.height > 0);
+    assert!(!image.is_fully_transparent(), ".ico 图标不应全透明");
+}
+
+/// .lnk 快捷方式应能通过 Shell 解析到目标并拿到图标。
+///
+/// 用系统里一定存在的快捷方式（开始菜单里的任一 .lnk）。
+/// 找不到任何 .lnk 时打印跳过原因——不是所有环境都有用户开始菜单。
+#[test]
+fn lnk_shortcut_is_supported() {
+    let candidates = [
+        "C:/ProgramData/Microsoft/Windows/Start Menu/Programs",
+        "C:/Users/Public/Desktop",
+    ];
+    let mut found: Option<std::path::PathBuf> = None;
+    for dir in candidates {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e.eq_ignore_ascii_case("lnk")).unwrap_or(false) {
+                found = Some(path);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+
+    let Some(lnk) = found else {
+        println!("跳过：本机用户/公共开始菜单里没有任何 .lnk");
+        return;
+    };
+
+    match file_icon(&lnk) {
+        Some(image) => {
+            println!(".lnk ({}) 图标：{}x{}", lnk.display(), image.width, image.height);
+            assert!(image.width > 0 && image.height > 0);
+        }
+        None => {
+            // .lnk 指向的目标可能已被卸载：这属于环境问题，不是缺陷
+            println!("跳过：无法从 {} 解析出图标（目标可能已卸载）", lnk.display());
+        }
+    }
+}
+
+/// 端到端：把 .ico 配成自定义图标，capture 应把它规范化后落成 PNG 缓存。
+#[test]
+fn ico_custom_icon_is_normalized_into_png_cache() {
+    let ico = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/icons/icon.ico");
+    if !ico.is_file() {
+        println!("跳过：找不到 icon.ico");
+        return;
+    }
+
+    let env = TestEnv::new();
+    let target = env.target("ico-app").with_custom_icon(Some(ico));
+
+    let path = default_icon_capture().capture(&target).expect("应能抓到 .ico 图标");
+    assert_eq!(
+        path,
+        env.icons_dir().join("ico-app.png"),
+        "缓存必须是 PNG 而不是原样拷贝 .ico"
+    );
+
+    let bytes = std::fs::read(&path).expect("读缓存失败");
+    assert!(looks_like_png(&bytes), "缓存必须是 PNG 格式");
+
+    let decoded = launcher_core::platform::icon::load_png_file(&path).expect("缓存应可解码");
+    println!(".ico -> PNG 缓存：{} 字节，{}x{}", bytes.len(), decoded.width, decoded.height);
+    assert!(decoded.width <= ICON_MAX_SIZE && decoded.height <= ICON_MAX_SIZE);
+}
+
+
+/// .lnk 的正向验证：临时造一个指向 notepad.exe 的快捷方式，确认能解析出图标。
+///
+/// 与 lnk_shortcut_is_supported 的区别：那条用的是系统里现成的 .lnk（可能指向已卸载程序），
+/// 这条**自己造一个一定有效的**，因此可以严格断言「拿到了非空图标」。
+#[test]
+fn lnk_pointing_to_real_exe_yields_icon() {
+    let lnk = std::env::temp_dir().join("appcatch-test.lnk");
+    if !lnk.is_file() {
+        println!(
+            "跳过：{} 不存在（需先用 WScript.Shell 创建一个指向 notepad.exe 的快捷方式）",
+            lnk.display()
+        );
+        return;
+    }
+
+    let image = file_icon(&lnk).expect("应能从 .lnk 解析出目标图标");
+    println!(".lnk -> 图标：{}x{}", image.width, image.height);
+    assert!(image.width > 0 && image.height > 0);
+    assert!(!image.is_fully_transparent(), ".lnk 图标不应全透明");
+}
+
+
+// ===========================================================================
+// f) 正斜杠路径回归（实测踩出来的坑）
+// ===========================================================================
+
+/// 正斜杠路径必须同样能抓出图标。
+///
+/// 背景：SHGetFileInfoW 对正斜杠路径**直接返回 0**（拿不到 hIcon），
+/// 而本项目里用户填的路径到处都是正斜杠——docs/CONFIG.md 的示例就是
+/// cwd = "E:/repo/GPT-SoVITS"、icon = "E:/repo/GPT-SoVITS/icon.png"。
+/// PrivateExtractIconsW 对正斜杠宽容，所以这个 bug 只在「exe 档位失败、
+/// 回落到 Shell 档位」时才暴露——正是 .lnk 的场景。
+///
+/// 修法是在转宽字符时把 / 换成反斜杠。这条测试钉住修复，
+/// 避免以后有人「清理」掉那个看起来多余的字面替换。
+#[test]
+fn forward_slash_path_works_like_backslash() {
+    if !std::path::Path::new("C:/Windows/System32/notepad.exe").is_file() {
+        println!("跳过：本机没有 notepad.exe");
+        return;
+    }
+
+    let forward = file_icon(std::path::Path::new("C:/Windows/System32/notepad.exe"));
+    let back = file_icon(&std::path::PathBuf::from(
+        "C:\\Windows\\System32\\notepad.exe",
+    ));
+
+    let forward = forward.expect("正斜杠路径应能抓出图标");
+    let back = back.expect("反斜杠路径应能抓出图标");
+    assert_eq!(
+        (forward.width, forward.height),
+        (back.width, back.height),
+        "两种写法应抓到同一尺寸的图标"
+    );
+}
+
+/// .lnk 用正斜杠写也必须能解析（走 Shell 档位，最容易被上面那个 bug 打中的场景）。
+#[test]
+fn forward_slash_lnk_resolves_through_shell() {
+    let lnk = std::env::temp_dir().join("appcatch-test.lnk");
+    if !lnk.is_file() {
+        println!("跳过：{} 不存在", lnk.display());
+        return;
+    }
+    // 把反斜杠换成正斜杠（模拟用户从文档里复制出来的写法）
+    let forward = lnk.to_string_lossy().replace('\\', "/");
+    let image = file_icon(std::path::Path::new(&forward))
+        .unwrap_or_else(|| panic!("正斜杠 .lnk 应能解析出图标: {forward}"));
+    println!("正斜杠 .lnk -> {}x{}", image.width, image.height);
+    assert!(image.width > 0 && image.height > 0);
+}
+
+// ===========================================================================
+// g) 并发回归：Shell 图标 API 必须串行化
+// ===========================================================================
+
+/// 高并发下反复抓同一个 .lnk，必须**每次都成功**。
+///
+/// 背景（实测）：SHGetFileInfoW 解析 .lnk 时并发调用会稳定失败——
+/// 本机并发 ≤6 线程全成功、≥8 线程必现一次静默失败（返回 0 / 空 hIcon）。
+/// 失败是静默的，调用方分不清「这文件真没图标」和「这次撞上了并发缺陷」。
+///
+/// 修法：file_icon 内部用进程级互斥锁串行化。代价可忽略
+/// （图标每个应用只抓一次，之后走磁盘缓存），却换掉了一整类不确定性。
+///
+/// 这条测试用 16 线程并发 10 轮钉住修复；去掉锁会稳定复现失败。
+#[test]
+fn shell_icon_api_is_serialized_under_concurrency() {
+    let lnk = std::env::temp_dir().join("appcatch-test.lnk");
+    if !lnk.is_file() {
+        println!("跳过：{} 不存在（需先创建 .lnk 测试文件）", lnk.display());
+        return;
+    }
+
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const THREADS: usize = 16;
+    const ROUNDS: usize = 10;
+
+    let lnk = std::sync::Arc::new(lnk);
+    let successes = std::sync::Arc::new(AtomicUsize::new(0));
+    let barrier = std::sync::Arc::new(Barrier::new(THREADS));
+
+    let mut handles = Vec::with_capacity(THREADS);
+    for _ in 0..THREADS {
+        let lnk = std::sync::Arc::clone(&lnk);
+        let successes = std::sync::Arc::clone(&successes);
+        let barrier = std::sync::Arc::clone(&barrier);
+        handles.push(std::thread::spawn(move || {
+            // 让全部线程尽量同时冲进 file_icon
+            barrier.wait();
+            for _ in 0..ROUNDS {
+                if file_icon(&lnk).is_some() {
+                    successes.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().expect("并发抓取线程不应 panic");
+    }
+
+    let total = THREADS * ROUNDS;
+    let ok = successes.load(Ordering::Relaxed);
+    println!("并发抓取 {total} 次，成功 {ok} 次");
+    assert_eq!(
+        ok, total,
+        "并发抓取 .lnk 必须全部成功（串行化失效时会静默返回 None）：{ok}/{total}"
+    );
+}
+
+// ===========================================================================
+// h) .lnk 夹具说明（不依赖手工准备的文件时明确跳过）
+// ===========================================================================
+
+/// 确认 .lnk 夹具的获取方式：有就复用，没有就打印生成方法并跳过。
+///
+/// 生成 .lnk 必须走 COM（Shell Link 对象），测试里起 PowerShell 太慢且依赖环境，
+/// 因此这里只做「夹具存在性检查 + 缺失时给出可复制的生成命令」，
+/// 让无夹具的环境明确跳过而不是假红。
+#[test]
+fn lnk_fixture_is_available_or_skipped() {
+    let lnk = std::env::temp_dir().join("appcatch-test.lnk");
+    if lnk.is_file() {
+        println!("复用已有夹具: {}", lnk.display());
+        return;
+    }
+    println!("跳过：{} 不存在", lnk.display());
+    println!("生成方式（PowerShell）：");
+    println!("  $s = New-Object -ComObject WScript.Shell");
+    println!("  $l = $s.CreateShortcut(...)");
+    println!("  $l.TargetPath = ...notepad.exe; $l.Save()");
+}

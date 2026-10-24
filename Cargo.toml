@@ -54,6 +54,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Gdi",
     # Win32_UI_Shell：exe/lnk/ico 资源图标（PrivateExtractIconsW / ExtractIconExW / SHGetFileInfoW）
     "Win32_UI_Shell",
+    # Win32_System_Com：解析 .lnk 必须先把调用线程初始化成 STA，
+    # 否则 SHGetFileInfoW 直接返回 0（实测：多线程并发调用时稳定失败）
+    "Win32_System_Com",
 ] }
 # 文本编码：Windows 中文环境的控制台/日志默认 cp936(GBK)，输出捕获需按平台编码无损解码
 encoding_rs = "0.8"
