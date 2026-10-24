@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 
 use crate::error::{AppCatchError, Result};
+use crate::session::SessionId;
 
 /// 环境变量名：覆盖 app_catch 根目录（测试隔离与便携部署用）。
 pub const HOME_ENV: &str = "APP_CATCH_HOME";
@@ -56,6 +57,16 @@ pub fn icons_dir() -> Result<PathBuf> {
     Ok(app_catch_home()?.join("icons"))
 }
 
+/// `<home>/sessions/<session_id>`：单个会话目录。
+pub fn session_dir(session_id: &SessionId) -> Result<PathBuf> {
+    Ok(sessions_dir()?.join(session_id.to_string()))
+}
+
+/// `<home>/sessions/<session_id>/events.jsonl`：会话事件流文件。
+pub fn session_log_path(session_id: &SessionId) -> Result<PathBuf> {
+    Ok(session_dir(session_id)?.join(SESSION_LOG_FILE))
+}
+
 /// 幂等地创建运行所需目录：根目录、apps、sessions、icons。
 ///
 /// 已存在时不报错；权限不足等错误以 [`AppCatchError::Io`] 返回。
@@ -64,6 +75,15 @@ pub fn ensure_layout() -> Result<()> {
         std::fs::create_dir_all(&dir).map_err(|e| AppCatchError::io(dir, e))?;
     }
     Ok(())
+}
+
+/// 幂等地创建单个会话目录，返回其路径。
+///
+/// M1b 写事件流前调用；M1a 只提供目录语义，不写文件。
+pub fn ensure_session_dir(session_id: &SessionId) -> Result<PathBuf> {
+    let dir = session_dir(session_id)?;
+    std::fs::create_dir_all(&dir).map_err(|e| AppCatchError::io(&dir, e))?;
+    Ok(dir)
 }
 
 #[cfg(test)]
@@ -132,6 +152,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn session_paths_are_nested_under_sessions() {
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let _guard = HomeGuard::set(dir.path());
+        let id = SessionId::new_v4();
+
+        let sdir = session_dir(&id).expect("取会话目录失败");
+        assert_eq!(sdir, dir.path().join("sessions").join(id.to_string()));
+
+        let log = session_log_path(&id).expect("取日志路径失败");
+        assert_eq!(log, sdir.join(SESSION_LOG_FILE));
+        assert!(log.to_string_lossy().ends_with("events.jsonl"));
+    }
+
+    #[test]
     fn ensure_layout_is_idempotent() {
         let dir = tempfile::tempdir().expect("创建临时目录失败");
         let _guard = HomeGuard::set(dir.path());
@@ -143,6 +177,17 @@ pub(crate) mod tests {
             let p = dir.path().join(sub);
             assert!(p.is_dir(), "目录应存在: {}", p.display());
         }
+    }
+
+    #[test]
+    fn ensure_session_dir_creates_and_is_idempotent() {
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let _guard = HomeGuard::set(dir.path());
+        let id = SessionId::new_v4();
+
+        let created = ensure_session_dir(&id).expect("创建会话目录失败");
+        assert!(created.is_dir());
+        ensure_session_dir(&id).expect("重复创建应幂等");
     }
 
     #[test]

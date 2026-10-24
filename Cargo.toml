@@ -19,8 +19,12 @@ serde_json = "1"
 toml = "1"
 # 错误类型统一用 thiserror 派生
 thiserror = "2"
+# 会话 ID 使用 uuid v4
+uuid = { version = "1", features = ["v4", "serde"] }
 # 跨平台用户主目录
 dirs = "7"
+# RFC3339 时间戳（带时区偏移，agent 可直接解析）
+time = { version = "0.3", features = ["formatting", "parsing"] }
 # 仅测试用：临时目录隔离 APP_CATCH_HOME
 tempfile = "3"
 tauri = { version = "2" }

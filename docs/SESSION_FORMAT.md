@@ -1,0 +1,148 @@
+# 会话事件格式（JSONL，v=1）
+
+每次启动一个应用 = **一个会话目录 + 一个 JSONL 事件流文件**。
+只凭这个文件，AI agent 就能还原「跑了什么、何时、输出什么、怎么结束的」。
+
+本文档中的示例由 `crates/launcher-core` 的实际序列化结果生成，并由测试
+`crates/launcher-core/tests/doc_examples.rs` 持续比对，**示例与代码不会漂移**。
+
+## 存储位置
+
+| 内容 | 路径 |
+| --- | --- |
+| 会话目录 | `<home>/sessions/<session_id>/` |
+| 事件流文件 | `<home>/sessions/<session_id>/events.jsonl` |
+| 图标缓存 | `<home>/icons/` |
+| 应用配置 | `<home>/apps/<app_id>.toml`（见 [CONFIG.md](./CONFIG.md)） |
+
+`<home>` 的解析规则：环境变量 `APP_CATCH_HOME`（非空）优先，否则取用户主目录下的 `.app_catch`。
+
+- `session_id` 是 **uuid v4**，标准连字符小写形式，例如 `e6b562fe-91e5-45f3-8a34-8c42e0be9cef`；
+- 同一个应用配置允许**多实例并发**，每次启动各自生成独立的 `session_id`。
+
+## 行格式约定
+
+1. **一行一个 JSON 对象**，行间以 `\n` 分隔；
+2. 序列化结果里**不允许出现裸换行**：输出内容中的 `\n`、`\r`、制表符等都由 JSON 转义为 `\n` 等序列，
+   `SessionEvent::to_jsonl_line()` 会显式校验并在发现换行时返回错误；
+3. **每条事件自带 `v` 版本字段**，使事件流自描述；
+4. 字段顺序：`event`（标签）在最前，随后是 `v`、`ts` 与各事件自有字段；
+5. 未知事件类型应被读取方**跳过而不是崩溃**（前向兼容，见下文版本策略）。
+
+## 事件总览
+
+| `event` | 用途 | 何时写 |
+| --- | --- | --- |
+| `start` | 会话起点：启动命令、工作目录、参数、进程信息 | 每次启动写且只写一条，位于文件首行 |
+| `output` | 一行 stdout / stderr | 进程每输出一行（不做多行合并） |
+| `status` | 运行状态快照 | 状态变化或周期性采样时（窗口标题/端口为尽力而为项） |
+| `exit` | 进程结束 | 会话终止时写且只写一条 |
+| `overflow` | 显式溢出 | 写盘跟不上、有界 channel 丢弃行时记录丢弃行数 |
+
+## 版本策略（v=1 的演进规则）
+
+- `v` 表示**事件格式版本**，当前恒为 `1`（`launcher_core::session::SESSION_EVENT_VERSION`）；
+- **只增不改**：v=1 内可以新增可选字段（读取方必须能忽略未知字段）；
+- **必填字段不删除、不改名、不改变语义**；需要破坏性变更时把 `v` 提升到 2，
+  同一文件内允许不同版本的行共存，读取方按行内 `v` 分派解析；
+- 已知事件类型不变，新增事件类型用新的 `event` 取值；旧读取方遇到未知 `event` 应跳过该行；
+- 会话目录与文件名（`sessions/<session_id>/events.jsonl`）**不随版本变化**；
+- 日志轮转（单会话上限默认 50MB、保留最近 N 片，需求基线 F3）会以**额外分片文件**出现，
+  分片命名与切换规则在 M1b 实现时补入本文档，不影响单文件行格式。
+
+## 各事件字段
+
+`ts` 统一为 **RFC3339 字符串（UTC，以 `Z` 结尾）**，例如 `2026-10-24T18:30:00.123456789Z`。
+
+### start
+
+| 字段 | 类型 | 必有 | 说明 |
+| --- | --- | --- | --- |
+| `event` | string | ✅ | 固定 `"start"` |
+| `v` | number | ✅ | 事件格式版本，当前 `1` |
+| `ts` | string | ✅ | RFC3339 时间戳 |
+| `session_id` | string | ✅ | uuid v4，与会话目录名一致 |
+| `app_id` | string | ✅ | 关联的应用配置 id |
+| `cmd` | string | ✅ | 可读命令行（给人和 agent 看） |
+| `cwd` | string | ✅ | 子进程工作目录 |
+| `argv` | string[] | ✅ | 完整参数向量（含 argv[0]），可精确还原启动方式 |
+| `pid` | number | ✅ | 子进程 pid |
+| `ppid` | number | ✅ | 启动器自身 pid |
+
+### output
+
+| 字段 | 类型 | 必有 | 说明 |
+| --- | --- | --- | --- |
+| `event` | string | ✅ | 固定 `"output"` |
+| `v` | number | ✅ | `1` |
+| `ts` | string | ✅ | RFC3339 时间戳 |
+| `stream` | string | ✅ | `"stdout"` 或 `"stderr"` |
+| `line` | string | ✅ | 单行内容（不含行尾换行） |
+
+### status
+
+| 字段 | 类型 | 必有 | 说明 |
+| --- | --- | --- | --- |
+| `event` | string | ✅ | 固定 `"status"` |
+| `v` | number | ✅ | `1` |
+| `ts` | string | ✅ | RFC3339 时间戳 |
+| `state` | string | ✅ | `"running"` / `"exited"` / `"crashed"` |
+| `window_title` | string 或 null | ❌ | 窗口标题；取不到为 `null` |
+| `ports` | number[] 或 null | ❌ | 监听端口；取不到为 `null` |
+
+### exit
+
+| 字段 | 类型 | 必有 | 说明 |
+| --- | --- | --- | --- |
+| `event` | string | ✅ | 固定 `"exit"` |
+| `v` | number | ✅ | `1` |
+| `ts` | string | ✅ | RFC3339 时间戳 |
+| `code` | number 或 null | ❌ | 退出码；被信号杀死或取不到时为 `null` |
+| `reason` | string | ✅ | `"normal"` / `"killed"` / `"crashed"` |
+
+### overflow
+
+| 字段 | 类型 | 必有 | 说明 |
+| --- | --- | --- | --- |
+| `event` | string | ✅ | 固定 `"overflow"` |
+| `v` | number | ✅ | `1` |
+| `ts` | string | ✅ | RFC3339 时间戳 |
+| `dropped` | number | ✅ | 本次丢弃的输出行数（不静默丢行） |
+
+## 完整示例
+
+下面 9 行覆盖了全部事件形态（真实文件里 `output` 会有成百上千行）：
+
+```jsonl
+{"event":"start","v":1,"ts":"2026-10-24T18:30:00.123456789Z","session_id":"e6b562fe-91e5-45f3-8a34-8c42e0be9cef","app_id":"gpt-sovits","cmd":"python main.py --port 9880","cwd":"E:/repo/GPT-SoVITS","argv":["python","main.py","--port","9880"],"pid":4321,"ppid":1234}
+{"event":"output","v":1,"ts":"2026-10-24T18:30:01.000000000Z","stream":"stdout","line":"Running on local URL: http://127.0.0.1:9880"}
+{"event":"output","v":1,"ts":"2026-10-24T18:30:02.000000000Z","stream":"stderr","line":"warning: torch not found, fallback to CPU"}
+{"event":"status","v":1,"ts":"2026-10-24T18:30:03.000000000Z","state":"running","window_title":"GPT-SoVITS","ports":[9880]}
+{"event":"status","v":1,"ts":"2026-10-24T18:30:04.000000000Z","state":"running","window_title":null,"ports":null}
+{"event":"exit","v":1,"ts":"2026-10-24T18:31:00.000000000Z","code":0,"reason":"normal"}
+{"event":"exit","v":1,"ts":"2026-10-24T18:32:00.000000000Z","code":null,"reason":"killed"}
+{"event":"exit","v":1,"ts":"2026-10-24T18:33:00.000000000Z","code":1,"reason":"crashed"}
+{"event":"overflow","v":1,"ts":"2026-10-24T18:34:00.000000000Z","dropped":128}
+```
+
+> 这是**形态示例**：真实文件里一个会话只有一条 `start`、一条 `exit`，
+> 这里把三种退出原因都列出以便查阅。
+
+## 读取建议（给 agent / 分析脚本）
+
+- 按行读取并跳过空行；对每行做 JSON 解析；
+- 用 `event` 字段分派；用 `v` 判断版本，未知 `event` 或未知字段直接忽略；
+- `output` 的 `stream` 区分 stdout/stderr，`line` 是按行切分的原始内容（不含换行符）；
+- 出现 `overflow` 事件表示该时间点有 `dropped` 行输出未被写入，分析时需说明数据不完整；
+- 文件末尾没有 `exit` 事件 = 会话未正常结束（启动器被强杀等），应视为不完整会话。
+
+## 相关 API
+
+```rust
+use launcher_core::session::{SessionEvent, SessionId, StreamKind};
+
+let id = SessionId::new_v4();                       // uuid v4
+let line = SessionEvent::output(StreamKind::Stdout, "hello")
+    .to_jsonl_line()?;                              // 单行 JSON，含 "v":1
+let back = SessionEvent::from_jsonl_line(&line)?;   // 反序列化回等值结构
+```

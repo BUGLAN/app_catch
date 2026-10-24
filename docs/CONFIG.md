@@ -2,8 +2,8 @@
 
 app_catch 为每个应用保存**一个独立的 TOML 文件**，字段全部使用 snake_case。
 
-本文档中的示例由 `crates/launcher-core` 的实际序列化结果生成（不是手写臆测），
-后续会补一个测试持续比对，**确保示例与代码不漂移**。
+本文档中的示例由 `crates/launcher-core` 的实际序列化结果生成，并由测试
+`crates/launcher-core/tests/doc_examples.rs` 持续比对，**示例与代码不会漂移**。
 
 ## 存储位置
 
