@@ -708,6 +708,52 @@ async fn status_events_share_one_writer_with_output() {
     );
 }
 
+/// 状态事件的返回不阻塞收尾：进程退出后循环必须立刻醒，而不是睡满一个采集间隔。
+///
+/// 修复前状态循环只靠 `sleep(interval)` + 轮询 `RunState` 退出，而 `RunState`
+/// 又只在守护任务最后一步才翻转，于是每个会话稳定被拖掉一个完整采集间隔
+/// （默认 3s，集成测试从 ~2s 涨到 51s 正是这个原因）。
+///
+/// 这里把采集间隔设成 2s（远大于收尾应有的开销），断言「stop 到 exit 落盘」
+/// 在 1s 内完成——只有靠显式信号唤醒才可能做到。
+#[tokio::test]
+async fn exit_does_not_wait_for_a_full_status_interval() {
+    let env = TestEnv::new();
+    let mut capture = CaptureConfig::default();
+    // 采集间隔远大于允许的收尾耗时：靠 sleep 醒来的实现必然超时
+    capture.status_interval = Some(Duration::from_secs(2));
+    capture.max_status_events = None;
+    let manager = env.manager(capture).with_status_probe(Arc::new(CountingProbe));
+
+    let app = cmd_app(&["/c", "ping -n 60 127.0.0.1 > nul"]);
+    let session = manager.start(&app).await.expect("启动失败");
+
+    // 等状态循环真的跑起来并进入 sleep（第一轮采样完成后必然在等）
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let started = std::time::Instant::now();
+    manager.stop(session.session_id).await.expect("停止失败");
+    manager
+        .wait_for_exit(session.session_id, Duration::from_secs(30))
+        .await
+        .expect("等待退出失败");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "收尾应被显式信号立即唤醒，不该等满 2s 采集间隔，实测 {elapsed:?}"
+    );
+
+    // exit 仍是末条：唤醒机制不得让 status 落到 exit 之后
+    let events = read_all_events(&manager.session_dir(&session.session_id));
+    assert!(
+        matches!(events.last(), Some(SessionEvent::Exit { .. })),
+        "末条应为 exit，实际: {:?}",
+        events.last()
+    );
+    println!("stop -> exit 耗时 {elapsed:?}（采集间隔 2s）");
+}
+
 /// 测试用固定值 probe：只填窗口标题，不需要进程树枚举。
 struct CountingProbe;
 

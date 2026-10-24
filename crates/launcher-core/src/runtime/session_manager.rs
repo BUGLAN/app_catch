@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 
 use crate::config::{AppConfig, AppId};
@@ -35,10 +35,14 @@ use crate::session::{now_rfc3339, ExitReason, RunState, SessionEvent, SessionId}
 /// 状态事件限流窗口：一分钟。
 const STATUS_RATE_WINDOW: Duration = Duration::from_secs(60);
 
-/// 收尾时等待状态采集循环结束的预算。
+/// 收尾时等待状态采集循环结束的兜底预算。
 ///
-/// 循环下一轮开头会重新检查会话状态，因此在写入 exit 之前先把它等到结束；
-/// 这个上限只兜住「探针卡在系统调用里」的极端情况：超时即 abort，绝不泄漏 task。
+/// **正常路径不走这个预算**：会话收尾会先通过 [`tokio::sync::Notify`]
+/// （[`ActiveSession::exit_signal`]）显式唤醒状态循环，循环收到信号后立刻返回，
+/// 因此进程退出到 exit 事件落盘之间只有毫秒级开销。
+///
+/// 这个上限只兜住「探针卡在系统调用里、来不及响应信号」的极端情况：
+/// 超时即 abort，绝不泄漏 task，也绝不让一次异常把会话收尾拖到 5 秒。
 const DURATION_STATUS_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 
 /// 会话的退出信息。
@@ -110,6 +114,11 @@ struct ActiveSession {
     ///
     /// 由本记录持有并在会话收尾时 await，保证结束后没有残留 task。
     status_task: Option<JoinHandle<()>>,
+    /// 状态循环的「立即收尾」信号。
+    ///
+    /// 收尾任务在写完 exit 之前 `notify_one`，循环从 `select` 里立刻醒来返回，
+    /// 不必等到下一个采集间隔——这是「正常路径不等待完整预算」的关键。
+    exit_signal: Arc<Notify>,
 }
 
 /// status 事件限流器：滑动 60 秒窗口内已写条数。
@@ -285,10 +294,11 @@ impl SessionManager {
 
         // 写盘权柄：状态循环与退出收尾共用它，谁都不再自己开 LogWriter
         let sink = pipeline.sink();
+        let exit_signal = Arc::new(Notify::new());
 
         // 状态采集循环：在 start 返回前就挂上
         // （句柄先存进 ActiveSession，收尾任务会 await 它，保证不泄漏 task）
-        let status_task = self.spawn_status_loop(session_id, spawned.handle.pid, sink.clone());
+        let status_task = self.spawn_status_loop(session_id, spawned.handle.pid, sink.clone(), Arc::clone(&exit_signal));
 
         {
             let mut guard = self.active.lock().await;
@@ -306,14 +316,19 @@ impl SessionManager {
                         latest_status: None,
                     },
                     status_task,
+                    exit_signal,
                 },
             );
         }
 
-        // 守护任务：等进程退出 -> 等状态循环收尾 -> 收尾管线（写 exit 并关闭） -> 回写状态
+        // 守护任务：等进程退出 -> 唤醒状态循环 -> 收尾管线（写 exit 并关闭） -> 回写状态
         //
-        // 顺序很关键：exit 事件必须落在日志**末尾**，因此状态循环必须先结束，
-        // 否则它可能在写完 exit 之后再排入一条 status。
+        // 顺序很关键，且每一步的理由都不同：
+        // 1. `backend.wait` 决定退出码；
+        // 2. 立刻发 exit_signal 唤醒状态循环——**不靠轮询、不等采集间隔**；
+        // 3. 状态循环退出后再 `close_with(exit)`：此刻不会再有 status 事件入队，
+        //    exit 因此必然是日志最后一条；
+        // 4. 最后回写会话状态，让 `wait_for_exit` 能看到结果。
         let backend = Arc::clone(&self.backend);
         let active = Arc::clone(&self.active);
         let handle = spawned.handle;
@@ -325,15 +340,21 @@ impl SessionManager {
                 Err(_) => None,
             };
 
-            // 取出状态循环句柄，顺带读出「是否主动停止」用于归类
-            let (status_task, stop_requested) = {
+            // 取出状态循环句柄与唤醒信号；顺带读出「是否主动停止」用于归类
+            let (status_task, exit_signal, stop_requested) = {
                 let mut guard = active.lock().await;
                 match guard.get_mut(&session_id) {
-                    Some(session) => (session.status_task.take(), session.stop_requested),
-                    None => (None, false),
+                    Some(session) => (
+                        session.status_task.take(),
+                        Arc::clone(&session.exit_signal),
+                        session.stop_requested,
+                    ),
+                    None => (None, Arc::new(Notify::new()), false),
                 }
             };
 
+            // 显式信号：状态循环从 select 里立刻醒来返回，不必等满一个采集间隔
+            exit_signal.notify_one();
             if let Some(task) = status_task {
                 // 正常路径毫秒级返回；预算只兜「探针卡在系统调用里」的极端情况
                 let mut task = task;
@@ -385,7 +406,7 @@ impl SessionManager {
     /// 3. 无论是否写事件，都把最新值写进 `SessionState::latest_status` 供 M2 直接读；
     /// 4. 写事件前先过 `max_status_events` 限流（滑动 60 秒窗口）；
     /// 5. 事件一律经 `sink` 排队，绝不自己开 `LogWriter`（单 writer 所有权）；
-    /// 6. 每轮开头检查进程是否还活着，已退出就结束循环。
+    /// 6. 退出有两条路径：轮首发现进程已不再 Running，**或**收到 `exit_signal`。
     ///
     /// `status_interval` 为 `None` 或零时直接返回 `None`（不启动任务）。
     fn spawn_status_loop(
@@ -393,6 +414,7 @@ impl SessionManager {
         session_id: SessionId,
         root_pid: u32,
         sink: CaptureSink,
+        exit_signal: Arc<Notify>,
     ) -> Option<JoinHandle<()>> {
         let interval = self.capture.status_interval?;
         if interval.is_zero() {
@@ -468,8 +490,12 @@ impl SessionManager {
                     }
                 }
 
-                // 等到下一轮：循环下一轮开头会重新检查会话状态
-                tokio::time::sleep(interval).await;
+                // 等到下一轮——但退出信号一到就立刻返回，不等满一个采集间隔。
+                // 这正是「正常路径不消耗 shutdown 预算」的关键：进程一退出就被唤醒。
+                tokio::select! {
+                    () = tokio::time::sleep(interval) => {}
+                    () = exit_signal.notified() => return,
+                }
             }
         }))
     }
@@ -694,6 +720,7 @@ impl SessionManager {
                     // 已崩溃的会话没有进程可采，不启动状态循环。
                     // sink 用一个通道已关闭的占位：它永远不会被写，也写不进去。
                     status_task: None,
+                    exit_signal: Arc::new(Notify::new()),
                 },
             );
             return Ok(Some(SessionSnapshot {
@@ -720,6 +747,7 @@ impl SessionManager {
             self.capture.clone(),
         );
         let sink = pipeline.sink();
+        let exit_signal = Arc::new(Notify::new());
 
         // 补写 status(running) 事件，与后续事件走同一条写入路径
         let _ = sink
@@ -727,7 +755,8 @@ impl SessionManager {
             .await;
 
         // 接管的活进程同样需要状态采集：否则重关联后的会话会永远没有窗口标题/端口
-        let status_task = self.spawn_status_loop(session_id, handle.pid, sink.clone());
+        let status_task =
+            self.spawn_status_loop(session_id, handle.pid, sink.clone(), Arc::clone(&exit_signal));
 
         {
             let mut guard = self.active.lock().await;
@@ -745,6 +774,7 @@ impl SessionManager {
                         latest_status: None,
                     },
                     status_task,
+                    exit_signal,
                 },
             );
         }
@@ -762,14 +792,19 @@ impl SessionManager {
                     Err(_) => None,
                 };
 
-                let (status_task, stop_requested) = {
+                let (status_task, exit_signal, stop_requested) = {
                     let mut guard = active.lock().await;
                     match guard.get_mut(&session_id) {
-                        Some(session) => (session.status_task.take(), session.stop_requested),
-                        None => (None, false),
+                        Some(session) => (
+                            session.status_task.take(),
+                            Arc::clone(&session.exit_signal),
+                            session.stop_requested,
+                        ),
+                        None => (None, Arc::new(Notify::new()), false),
                     }
                 };
 
+                exit_signal.notify_one();
                 if let Some(task) = status_task {
                     let mut task = task;
                     if tokio::time::timeout(DURATION_STATUS_SHUTDOWN_BUDGET, &mut task)
