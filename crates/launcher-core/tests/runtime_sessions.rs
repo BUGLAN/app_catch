@@ -315,6 +315,189 @@ async fn stop_reclaims_grandchild_processes() {
     }
 }
 
+// ============================ f) 编码保真（GBK / UTF-8 / lossy） ============================
+
+/// 「中文测试」的 GBK(cp936) 字节序列：这是 Windows 中文环境的默认控制台编码。
+const GBK_ZHONGWEN_CESHI: &[u8] = &[0xD6, 0xD0, 0xCE, 0xC4, 0xB2, 0xE2, 0xCA, 0xD4];
+
+/// 既不是合法 UTF-8、也不是合法 GBK 的字节对（0x81 0x30 在 GBK 中无映射）。
+const UNDECODABLE_BYTES: &[u8] = &[0x81, 0x30];
+
+fn temp_bytes_file(name: &str, bytes: &[u8]) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("创建临时目录失败");
+    let path = dir.path().join(name);
+    std::fs::write(&path, bytes).expect("写临时字节文件失败");
+    let text = path.to_string_lossy().into_owned();
+    (dir, text)
+}
+
+/// 启动真实子进程，把若干「文件内容」按顺序原样写到 stdout。
+///
+/// Windows 的 cmd 内置命令 type 按字节透传文件内容（不做编码转换），
+/// 因此这是构造**真 GBK 输出流**的最直接办法。
+async fn run_type_session(
+    env: &TestEnv,
+    files: &[&str],
+    capture: CaptureConfig,
+) -> (std::path::PathBuf, Vec<SessionEvent>) {
+    let manager = env.manager(capture);
+    let command = files
+        .iter()
+        .map(|f| format!("type {f}"))
+        .collect::<Vec<_>>()
+        .join(" & ");
+    let app = cmd_app(&["/c", &command]);
+
+    let session = manager.start(&app).await.expect("启动失败");
+    manager
+        .wait_for_exit(session.session_id, Duration::from_secs(30))
+        .await
+        .expect("等待退出失败");
+
+    let dir = manager.session_dir(&session.session_id);
+    let events = read_all_events(&dir);
+    (dir, events)
+}
+
+/// 取全部 output 事件里的原始行（不做任何归一化）。
+fn output_lines(events: &[SessionEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::Output { line, .. } => Some(line.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 取输出行对应的编码标记。
+fn output_encodings(events: &[SessionEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::Output { encoding, .. } => Some(encoding.as_str().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 缺陷回归：GBK 字节「中文测试」必须无损还原，且标记 encoding=gbk。
+///
+/// 修复前：decode_line 用 from_utf8_lossy，6 个原始字节被替换为 U+FFFD，
+/// 落盘为替换字符 + Ĳ 的乱码，原始信息不可还原。
+#[tokio::test]
+async fn gbk_line_is_decoded_losslessly_and_tagged() {
+    let env = TestEnv::new();
+    let (_keep, path) = temp_bytes_file("gbk.txt", &[GBK_ZHONGWEN_CESHI, b"\n"].concat());
+
+    let (dir, events) = run_type_session(&env, &[&path], CaptureConfig::default()).await;
+
+    let lines = output_lines(&events);
+    assert_eq!(
+        lines,
+        vec!["中文测试".to_string()],
+        "GBK 行应无损还原: {lines:?}"
+    );
+    assert_eq!(output_encodings(&events), vec!["gbk".to_string()]);
+    assert!(
+        !lines[0].contains(char::REPLACEMENT_CHARACTER),
+        "不得出现替换字符 U+FFFD: {:?}",
+        lines[0]
+    );
+
+    // 落盘原文同样不得含替换字符，并显式带上 encoding 字段
+    let raw = std::fs::read_to_string(dir.join("events.jsonl")).expect("读日志失败");
+    let output_line = raw
+        .lines()
+        .find(|l| l.contains("\"event\":\"output\""))
+        .expect("应有 output 行");
+    assert!(
+        !output_line.contains(char::REPLACEMENT_CHARACTER),
+        "JSONL 中不得出现替换字符: {output_line}"
+    );
+    assert!(
+        output_line.contains("\"encoding\":\"gbk\""),
+        "JSONL 应标记 encoding=gbk: {output_line}"
+    );
+    assert!(
+        output_line.contains("\"line\":\"中文测试\""),
+        "JSONL 行内容应无损: {output_line}"
+    );
+}
+
+/// UTF-8 正例：中文 UTF-8 输出解析正确并标记 encoding=utf-8。
+#[tokio::test]
+async fn utf8_line_is_decoded_and_tagged() {
+    let env = TestEnv::new();
+    let (_keep, path) = temp_bytes_file("u8.txt", "UTF-8 中文输出测试\n".as_bytes());
+
+    let (_dir, events) = run_type_session(&env, &[&path], CaptureConfig::default()).await;
+
+    assert_eq!(
+        output_lines(&events),
+        vec!["UTF-8 中文输出测试".to_string()]
+    );
+    assert_eq!(output_encodings(&events), vec!["utf-8".to_string()]);
+}
+
+/// 混合流：同一进程先后输出 UTF-8 行与 GBK 行，两行各自按自己的编码解码。
+#[tokio::test]
+async fn mixed_utf8_and_gbk_lines_are_decoded_independently() {
+    let env = TestEnv::new();
+    let (_keep_u8, u8_path) = temp_bytes_file("u8.txt", "first-utf8 中文\n".as_bytes());
+    let (_keep_gbk, gbk_path) = temp_bytes_file("gbk.txt", &[GBK_ZHONGWEN_CESHI, b"\n"].concat());
+
+    let (_dir, events) =
+        run_type_session(&env, &[&u8_path, &gbk_path], CaptureConfig::default()).await;
+
+    assert_eq!(
+        output_lines(&events),
+        vec!["first-utf8 中文".to_string(), "中文测试".to_string()],
+        "UTF-8 与 GBK 行应各自正确解码"
+    );
+    assert_eq!(
+        output_encodings(&events),
+        vec!["utf-8".to_string(), "gbk".to_string()]
+    );
+}
+
+/// 非法字节（既非 UTF-8 也非合法 GBK）：不 panic、不丢行，并明确标记 lossy。
+#[tokio::test]
+async fn undecodable_bytes_are_kept_and_marked_lossy() {
+    let env = TestEnv::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(b"ok-before\n");
+    bytes.extend_from_slice(UNDECODABLE_BYTES);
+    bytes.extend_from_slice(b"\nok-after\n");
+
+    let (_keep, path) = temp_bytes_file("bad.bin", &bytes);
+    let (dir, events) = run_type_session(&env, &[&path], CaptureConfig::default()).await;
+
+    let lines = output_lines(&events);
+    assert_eq!(lines.len(), 3, "非法字节行不得被丢弃: {lines:?}");
+    assert_eq!(lines[0], "ok-before");
+    assert_eq!(lines[2], "ok-after");
+    assert!(
+        lines[1].contains(char::REPLACEMENT_CHARACTER),
+        "无法解码时应以替换字符表示: {lines:?}"
+    );
+    assert_eq!(
+        output_encodings(&events),
+        vec![
+            "utf-8".to_string(),
+            "lossy".to_string(),
+            "utf-8".to_string()
+        ],
+        "只有无法解码的那一行标记 lossy"
+    );
+
+    let raw = std::fs::read_to_string(dir.join("events.jsonl")).expect("读日志失败");
+    assert!(
+        raw.contains("\"encoding\":\"lossy\""),
+        "JSONL 应显式标记 lossy 行: {raw}"
+    );
+}
+
 // ============================ e) 大量输出不丢行 ============================
 
 #[tokio::test]

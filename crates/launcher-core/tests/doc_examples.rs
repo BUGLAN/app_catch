@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use launcher_core::config::{AppConfig, AppId, AppStore};
 use launcher_core::session::{
-    ExitReason, RunState, SessionEvent, SessionId, StreamKind, SESSION_EVENT_VERSION,
+    ExitReason, OutputEncoding, RunState, SessionEvent, SessionId, StreamKind,
+    SESSION_EVENT_VERSION,
 };
 
 /// 仓库根下的文档路径。
@@ -86,12 +87,14 @@ fn doc_events() -> Vec<SessionEvent> {
             ts: "2026-10-24T18:30:01.000000000Z".to_string(),
             stream: StreamKind::Stdout,
             line: "Running on local URL: http://127.0.0.1:9880".to_string(),
+            encoding: OutputEncoding::Utf8,
         },
         SessionEvent::Output {
             v: SESSION_EVENT_VERSION,
             ts: "2026-10-24T18:30:02.000000000Z".to_string(),
             stream: StreamKind::Stderr,
             line: "warning: torch not found, fallback to CPU".to_string(),
+            encoding: OutputEncoding::Utf8,
         },
         SessionEvent::Status {
             v: SESSION_EVENT_VERSION,
