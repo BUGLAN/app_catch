@@ -172,6 +172,55 @@ fn session_doc_examples_match_code_output() {
     );
 }
 
+
+/// docs/ICONS.md 里声明的尺寸上限与缓存文件名规则必须与代码常量一致。
+///
+/// 图标策略是「写进文档的产品决策」，文档与代码漂移比没有文档更糟：
+/// 用户会照着文档去 ~/.app_catch/icons/ 找文件，而代码可能已经改了命名规则。
+#[test]
+fn icons_doc_matches_code_constants() {
+    let doc = read_doc("ICONS.md");
+
+    // 尺寸上限
+    assert!(
+        doc.contains(&format!("≤ **{}px**", launcher_core::platform::ICON_MAX_SIZE)),
+        "docs/ICONS.md 应声明尺寸上限为 {}px",
+        launcher_core::platform::ICON_MAX_SIZE
+    );
+
+    // 缓存文件名规则：<app_id>.png
+    assert!(
+        doc.contains("<app_id>.png"),
+        "docs/ICONS.md 应写明缓存文件名是 <app_id>.png"
+    );
+    assert!(
+        doc.contains("icons/"),
+        "docs/ICONS.md 应写明缓存目录是 icons/"
+    );
+
+    // 优先级链的四档必须在文档里出现
+    for stage in ["用户自定义 icon", "运行中窗口图标", "exe 资源图标"] {
+        assert!(
+            doc.contains(stage),
+            "docs/ICONS.md 的优先级链应包含「{stage}」"
+        );
+    }
+
+    // 兜底语义与依赖选择理由
+    assert!(
+        doc.contains("抓不到不算失败"),
+        "docs/ICONS.md 必须明确写出「抓不到不算失败」这个产品决策"
+    );
+    assert!(
+        doc.contains("data URL"),
+        "docs/ICONS.md 应说明为什么用 data URL 而不是 asset 协议"
+    );
+    assert!(
+        doc.contains("png"),
+        "docs/ICONS.md 应说明为什么选 png 而不是 image"
+    );
+}
+
 #[test]
 fn docs_are_linked_from_readme() {
     let readme = std::fs::read_to_string(
@@ -179,7 +228,14 @@ fn docs_are_linked_from_readme() {
     )
     .expect("读取 README.md 失败");
 
-    for link in ["docs/CONFIG.md", "docs/SESSION_FORMAT.md", "docs/RUNTIME.md"] {
+    for link in [
+        "docs/CONFIG.md",
+        "docs/SESSION_FORMAT.md",
+        "docs/RUNTIME.md",
+        "docs/GUI.md",
+        // M3：图标文档必须从 README 可达，否则用户找不到「为什么我的应用没有图标」
+        "docs/ICONS.md",
+    ] {
         assert!(readme.contains(link), "README.md 应链接 {link}");
     }
 }

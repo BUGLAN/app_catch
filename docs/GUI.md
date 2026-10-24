@@ -31,7 +31,7 @@ M2 把 app_catch 从「M0 状态页」变成可用的桌面启动器：左侧应
 
 | 元素 | 说明 |
 | --- | --- |
-| 图标块 | M3 才有真实图标，当前用 30×30 圆角块 + 名称首字（`initialOf`，用 `Array.from` 避免切坏 emoji） |
+| 图标 | **M3 起是真实图标**（30×30）：由 `AppIcon` 组件渲染，数据来自 `get_app_icon` 命令的 data URL；抓不到时用内置默认图；连默认图都取不到（非 Tauri 环境）才退回名称首字块（`initialOf`）。详见 [docs/ICONS.md](ICONS.md) |
 | 名称 | 超长省略，hover 显示完整名称 |
 | 标签 | 最多显示 3 个；无标签显示虚线「无标签」 |
 | 状态徽标 | `未运行` / `运行中`（多实例显示 ×N）/ `已退出` / `已崩溃`，由该应用的活跃会话聚合得出 |
@@ -186,7 +186,19 @@ hover 提示「该行原始字节既不是合法 UTF-8 也无法按 GBK 解码�
 | `recover_sessions` | — | `BootReport` | `{ home, recovered[], error }`，启动期恢复残留会话 |
 | `core_version` / `app_version` | — | `string` | M0 链路自检，保留兼容 |
 
-### 2.5 启动时发生什么
+### 2.5 图标（M3）
+
+| 命令 | 参数 | 返回 | 说明 |
+| --- | --- | --- | --- |
+| `get_app_icon` | `appId: string` | `string \| null` | PNG 的 **data URL**；`null` 表示「没有图标」（不是错误，前端用默认图） |
+| `default_icon` | — | `string` | 内置默认图的 data URL（编译进二进制，永远可用） |
+
+**为什么返回 data URL 而不是路径**：图标只有几十 KB，base64 之后仍远小于一次 IPC 的合理开销；
+而走 Tauri 的 `asset:` 协议需要在 `tauri.conf.json` 配 `assetProtocol.scope`、
+在 `capabilities/default.json` 加 `core:asset:default`，任一处漏配都只在运行时暴露成「图裂」。
+因此 **M3 没有改动 capabilities**，仍是 `core:default`。选择理由与前端三层缓存见 [docs/ICONS.md](ICONS.md)。
+
+### 2.6 启动时发生什么
 
 `lib.rs` 的 `setup` 里执行 `AppState::bootstrap()`：`paths::ensure_layout()` 建好
 `<home>/{apps,sessions,icons}`，再构造 `SessionManager`。
@@ -270,9 +282,12 @@ src/
     api.ts                     invoke 唯一出口：错误归一 + 非宿主降级
     logModel.ts                纯逻辑：事件->日志行、游标推进、自动滚底、格式化
     logModel.test.ts           29 条单测
+    iconModel.ts               图标会话内缓存 + 并发合并 + 失败静默降级
+    iconModel.test.ts          11 条单测
   hooks/
     useSessionLog.ts           轮询 hook：增量游标 + 状态刷新 + 隐藏暂停
   components/
+    AppIcon.tsx                图标：有图用图 / 无图用默认图 / 再退回首字块
     AppList.tsx                左侧列表（状态聚合、hover 启动）
     AppDetail.tsx              应用详情 + 活跃会话表
     AppForm.tsx                新建/编辑表单 + 纯函数导出（parseArgs/parseEnv/validateAppId）
@@ -303,7 +318,8 @@ src/
    这是刻意选择——否则那些进程会既停不掉也查不到。
 5. **无虚拟滚动**：日志最多保留 4000 行（`MAX_LOG_ROWS`），超出丢弃最旧的。
    更长的历史请用「最近事件」或直接读 JSONL 文件。
-6. **图标仍是占位块**：真实图标抓取属于 M3。
+6. **图标可能抓不到**：Python 服务类应用没有窗口，exe 又是解释器，因此会显示内置默认图——
+   这是**产品决策**而不是缺陷（详见 [docs/ICONS.md](ICONS.md)）。运行时图标要在会话启动后 1.5 秒才重抓一次。
 7. **组件渲染级测试暂缺**：当前 vitest 只跑纯逻辑（node 环境），渲染正确性靠手动验收清单覆盖。
 
 ## 7. 手动验收步骤

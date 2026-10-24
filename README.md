@@ -2,11 +2,11 @@
 
 开发者向的桌面应用启动器：把 E:\repo 下的自开发应用收进可管理列表，一键启动，并把每个会话的进程信息、运行状态与 stdout/stderr 全量捕获为结构化 JSONL，供 AI agent 直接读取。
 
-> 当前进度：**M2 完成，GUI 可用**。配置管理、路径布局、会话事件模型、Windows 进程后端（Job Object 杀树）、输出捕获与 JSONL 轮转、会话管理器与重启重关联、窗口标题与监听端口采集均已落地；M2 在此之上加了完整 GUI：应用列表、启动/停止/重启、会话详情（实时日志流、状态条、退出信息）。
+> 当前进度：**M3 完成，图标可用**。配置管理、路径布局、会话事件模型、Windows 进程后端（Job Object 杀树）、输出捕获与 JSONL 轮转、会话管理器与重启重关联、窗口标题与监听端口采集、完整 GUI（应用列表、启动/停止/重启、会话详情实时日志流）均已落地；M3 在此之上把图标从占位块换成真实图标：Windows 从**运行中窗口**与 **exe 资源**两路抓取，统一规范化成 PNG 缓存到 `~/.app_catch/icons/`，抓不到用内置默认图兜底（**抓不到不算失败**）。
 >
 > 输出捕获按「严格 UTF-8 → Windows GBK(cp936) 回退 → lossy 标记」逐行解码，GBK 中文日志无损保真；每行带 `encoding` 标记，详见 [docs/SESSION_FORMAT.md](docs/SESSION_FORMAT.md)。
 >
-> GUI 的界面结构、命令层 API 与轮询策略见 [docs/GUI.md](docs/GUI.md)。
+> GUI 的界面结构、命令层 API 与轮询策略见 [docs/GUI.md](docs/GUI.md)；图标的优先级链、缓存失效规则与兜底语义见 [docs/ICONS.md](docs/ICONS.md)。
 
 ## 目录架构
 
@@ -20,6 +20,7 @@
 | `docs/SESSION_FORMAT.md` | 会话 JSONL 事件格式：五类事件字段表、示例行、版本演进策略、轮转分片与溢出/重关联语义。 |
 | `docs/RUNTIME.md` | 会话运行时：生命周期状态机、`SessionManager` API、退出分类、捕获/轮转策略、Windows 后端实现与已知限制。 |
 | `docs/GUI.md` | **M2**：界面结构、命令层 API 一览、轮询策略、分片读取与边写边读的安全性、已知限制。 |
+| `docs/ICONS.md` | **M3**：图标优先级链、PNG 规范、缓存位置与失效规则、兜底语义、为什么用 data URL 与 `png` crate、已知限制。 |
 | `Cargo.toml` | cargo workspace 根，成员为 `crates/launcher-core` 与 `src-tauri`，公共依赖集中在 `[workspace.dependencies]`。 |
 
 ## 前置依赖
@@ -105,6 +106,9 @@ pnpm tauri build
 | 10 | 点「编辑」，改名称为「演示2」，保存 | 列表与详情标题同步更新 |
 | 11 | 点「删除」 | 弹出二次确认，说明只删配置不删会话目录；确认后列表移除，toast 提示已删除 |
 | 12 | 重新点「启动」后关掉窗口，再跑一次 `pnpm tauri dev` | 首屏调用 `recover_sessions`；残留会话出现在会话表中，日志从已落盘文件继续显示 |
+| 13 | 新建一个命令为 `notepad` 的应用 | 列表与详情页显示 **notepad 的真图标**（不是名称首字） |
+| 14 | 新建一个命令为 `python` 且没有窗口的应用 | 显示**内置默认图标**（深色圆角 + 四宫格），不弹任何错误 |
+| 15 | 检查 `~/.app_catch/icons/` | 出现 `<app_id>.png`；删掉它再刷新列表会自动重建 |
 
 ### 验证 lossy 与 overflow 的显式提示（可选）
 
@@ -119,7 +123,7 @@ pnpm tauri build
 | M0 | 仓库初始化：cargo workspace + Tauri 2 脚手架，cargo check/test 全绿，需求基线入库，README 写清构建方式 | ✅ 已完成 |
 | M1 | launcher-core（Windows 先行）：F1 配置、F2 启动、F3 捕获 + JSONL + 轮转、F4 停止与进程树回收、窗口标题与监听端口采集 | ✅ 已完成 |
 | M2 | GUI：应用列表（图标/名称/状态）、启动/停止/重启、会话详情（实时日志流、状态、退出信息） | ✅ 已完成 |
-| M3 | 图标：Windows 抓取 + 缓存 + 兜底 | ⏳ 待做 |
+| M3 | 图标：Windows 抓取 + 缓存 + 兜底 | ✅ 已完成 |
 | M4 | macOS 对齐：构建通过、进程组语义、图标抓取 | ⏳ 待做 |
 | M5 | 打包与端到端验收：用真实项目（Python 服务 + GUI 应用）走完整流程 | ⏳ 待做 |
 
@@ -131,6 +135,8 @@ pnpm tauri build
 | `paths` | `APP_CATCH_HOME` 优先的目录布局（apps / sessions / icons） | [docs/CONFIG.md](docs/CONFIG.md) |
 | `session` | `SessionId` / `SessionEvent`：自描述 v=1 的 JSONL 事件模型（`output` 事件带 `encoding` 标记） | [docs/SESSION_FORMAT.md](docs/SESSION_FORMAT.md) |
 | `platform` | `ProcessBackend` / `IconCapture` trait；Windows 后端用 Job Object 实现杀树与 PID 复用判定 | [docs/RUNTIME.md](docs/RUNTIME.md) |
+| `platform::icon` | 图标核心（跨平台）：RGBA 规范化、PNG 编解码、缓存三态判定、`IconSource` 抽象与 `resolve_and_cache` | [docs/ICONS.md](docs/ICONS.md) |
+| `platform::icon_windows` | Windows 图标抓取：窗口 WM_GETICON / 类图标、exe 资源（PrivateExtractIconsW 等），RAII 句柄 | [docs/ICONS.md](docs/ICONS.md) |
 | `runtime` | `SessionManager` 门面、输出捕获管线、JSONL 写入与轮转 | [docs/RUNTIME.md](docs/RUNTIME.md) |
 | `error` / `fsutil` | 统一错误类型 `AppCatchError` 与原子写盘工具 | 见源码 rustdoc |
 
@@ -165,10 +171,11 @@ cargo run -p launcher-core --example session_demo -- cmd /c "echo A&echo B&exit 
 
 | 层 | 命令 | 覆盖 |
 | --- | --- | --- |
-| launcher-core | `cargo test -p launcher-core` | 配置、路径、会话事件、日志轮转、捕获管线、会话管理器、状态采集 |
-| src-tauri 单元 | `cargo test -p app-catch --lib` | 错误转换、DTO 校验、事件分片读取（含半行/轮转/裁剪） |
+| launcher-core | `cargo test -p launcher-core` | 配置、路径、会话事件、日志轮转、捕获管线、会话管理器、状态采集、图标编解码与缓存 |
+| launcher-core 图标 | `cargo test -p launcher-core --test icon_capture` | **真实 notepad.exe 图标**、真实 WinForms 窗口图标、缓存命中（mtime 不变）、兜底语义、自定义图标优先级 |
+| src-tauri 单元 | `cargo test -p app-catch --lib` | 错误转换、DTO 校验、事件分片读取（含半行/轮转/裁剪）、默认图 data URL |
 | src-tauri 集成 | `cargo test -p app-catch --test session_events` | 真实进程跑出真实分片，分页游标与直读结果逐条比对 |
-| 前端 | `pnpm test` | 日志行转换、游标推进、lossy 判定、自动滚底、表单解析 |
+| 前端 | `pnpm test` | 日志行转换、游标推进、lossy 判定、自动滚底、表单解析、图标缓存与降级 |
 
 ## 约定
 
