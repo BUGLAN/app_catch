@@ -45,6 +45,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_ProcessStatus",
     "Win32_System_Diagnostics_ToolHelp",
 ] }
+# 文本编码：Windows 中文环境的控制台/日志默认 cp936(GBK)，输出捕获需按平台编码无损解码
+encoding_rs = "0.8"
 # 仅测试用：临时目录隔离 APP_CATCH_HOME
 tempfile = "3"
 tauri = { version = "2" }

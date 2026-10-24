@@ -112,6 +112,55 @@ impl StreamKind {
     }
 }
 
+/// `output` 事件的默认编码标记。
+///
+/// 旧日志（M1b 之前）没有 `encoding` 字段，读取时一律按 UTF-8 解读：
+/// 那时捕获层用的是 `from_utf8_lossy`，非 UTF-8 字节已经被替换成 U+FFFD，
+/// 因此「按 utf-8 解读」是对旧数据唯一诚实的默认值。
+pub const DEFAULT_OUTPUT_ENCODING: &str = "utf-8";
+
+/// 一行输出的原始编码标记。
+///
+/// 值域与 JSON 中的字符串一致：`"utf-8"` / `"gbk"` / `"lossy"`。
+/// - `utf-8`：原始字节本身是合法 UTF-8，无损；
+/// - `gbk`：原始字节不是合法 UTF-8，但按 GBK/GB18030（cp936）无损解码成功；
+/// - `lossy`：两种解码都失败，内容已被替换字符替代，**原始字节不可还原**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputEncoding {
+    /// 合法 UTF-8，无损解码。
+    #[serde(rename = "utf-8")]
+    Utf8,
+    /// 按 GBK/GB18030（cp936）无损解码。
+    #[serde(rename = "gbk")]
+    Gbk,
+    /// 无法解码，已用替换字符兜底（有损）。
+    #[serde(rename = "lossy")]
+    Lossy,
+}
+
+impl OutputEncoding {
+    /// 序列化后的字符串形式（与 JSON 中的取值一致）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutputEncoding::Utf8 => "utf-8",
+            OutputEncoding::Gbk => "gbk",
+            OutputEncoding::Lossy => "lossy",
+        }
+    }
+}
+
+impl Default for OutputEncoding {
+    fn default() -> Self {
+        Self::Utf8
+    }
+}
+
+impl fmt::Display for OutputEncoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// 退出原因：正常退出 / 被停止（含整棵进程树被回收）/ 崩溃。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -204,6 +253,12 @@ pub enum SessionEvent {
         stream: StreamKind,
         /// 单行内容（不含行尾换行；内容中的控制字符由 JSON 转义，保证仍是单行）。
         line: String,
+        /// 该行原始字节的编码标记（`utf-8` / `gbk` / `lossy`）。
+        ///
+        /// 缺省为 `utf-8`：旧日志没有这个字段，而旧捕获层已对非 UTF-8 字节做过有损替换，
+        /// 按 UTF-8 解读是唯一诚实的默认值。详见 `docs/SESSION_FORMAT.md`「编码处理策略」。
+        #[serde(default)]
+        encoding: OutputEncoding,
     },
     /// 运行状态变化（窗口标题与监听端口为尽力而为项）。
     Status {
@@ -273,13 +328,26 @@ impl SessionEvent {
         }
     }
 
-    /// 构造 output 事件。
+    /// 构造 output 事件（编码标记取默认值 `utf-8`）。
     pub fn output(stream: StreamKind, line: impl Into<String>) -> Self {
+        Self::output_with_encoding(stream, line, OutputEncoding::Utf8)
+    }
+
+    /// 构造带编码标记的 output 事件。
+    ///
+    /// 捕获层用这个构造函数如实标注每行原始字节的编码，使 agent 能区分
+    /// 「本来就是 UTF-8」「按 GBK 无损解出」与「已不可还原（lossy）」。
+    pub fn output_with_encoding(
+        stream: StreamKind,
+        line: impl Into<String>,
+        encoding: OutputEncoding,
+    ) -> Self {
         Self::Output {
             v: SESSION_EVENT_VERSION,
             ts: now_rfc3339(),
             stream,
             line: line.into(),
+            encoding,
         }
     }
 
@@ -566,6 +634,65 @@ mod tests {
         match SessionEvent::from_jsonl_line(legacy).expect("旧事件应可解析") {
             SessionEvent::Start { start_time, .. } => assert_eq!(start_time, 0),
             other => panic!("应为 start 事件，实际: {other:?}"),
+        }
+    }
+
+    /// 编码标记的线上表示：agent 直接读这个字符串判断该行原始编码。
+    #[test]
+    fn output_encoding_wire_values_are_stable() {
+        assert_eq!(OutputEncoding::Utf8.as_str(), "utf-8");
+        assert_eq!(OutputEncoding::Gbk.as_str(), "gbk");
+        assert_eq!(OutputEncoding::Lossy.as_str(), "lossy");
+        assert_eq!(DEFAULT_OUTPUT_ENCODING, "utf-8");
+        assert_eq!(OutputEncoding::default(), OutputEncoding::Utf8);
+        assert_eq!(OutputEncoding::Gbk.to_string(), "gbk");
+
+        for (variant, wire) in [
+            (OutputEncoding::Utf8, "\"utf-8\""),
+            (OutputEncoding::Gbk, "\"gbk\""),
+            (OutputEncoding::Lossy, "\"lossy\""),
+        ] {
+            let json = serde_json::to_string(&variant).expect("序列化失败");
+            assert_eq!(json, wire, "编码标记的 JSON 表示不得漂移");
+            let back: OutputEncoding = serde_json::from_str(&json).expect("反序列化失败");
+            assert_eq!(back, variant);
+        }
+    }
+
+    /// output 事件必须显式带 encoding 字段，且取值为约定字符串。
+    #[test]
+    fn output_event_carries_encoding_field() {
+        let event = SessionEvent::output_with_encoding(
+            StreamKind::Stdout,
+            "中文测试",
+            OutputEncoding::Gbk,
+        );
+        let line = event.to_jsonl_line().expect("序列化失败");
+        assert!(line.contains("\"encoding\":\"gbk\""), "应包含 encoding 字段: {line}");
+        assert!(line.contains("\"line\":\"中文测试\""), "行内容不得损坏: {line}");
+        assert_eq!(SessionEvent::from_jsonl_line(&line).expect("反序列化失败"), event);
+    }
+
+    /// 向后兼容：旧日志的 output 事件没有 encoding 字段，必须能解析且默认 utf-8。
+    #[test]
+    fn legacy_output_event_without_encoding_defaults_to_utf8() {
+        let legacy = concat!(
+            "{\"event\":\"output\",\"v\":1,\"ts\":\"2026-01-01T00:00:00Z\",",
+            "\"stream\":\"stdout\",\"line\":\"服务已启动\"}"
+        );
+        match SessionEvent::from_jsonl_line(legacy).expect("旧 output 事件应可解析") {
+            SessionEvent::Output {
+                line, encoding, ..
+            } => {
+                assert_eq!(line, "服务已启动");
+                assert_eq!(
+                    encoding,
+                    OutputEncoding::Utf8,
+                    "缺失 encoding 时应按 utf-8 解读"
+                );
+                assert_eq!(encoding.as_str(), DEFAULT_OUTPUT_ENCODING);
+            }
+            other => panic!("应为 output 事件，实际: {other:?}"),
         }
     }
 
