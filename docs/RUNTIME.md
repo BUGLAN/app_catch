@@ -8,13 +8,53 @@
 
 ```text
 SessionManager（会话门面，async）
-   └── CapturePipeline（stdout/stderr 读取 → 有界 channel → 串行写盘）
-          └── LogWriter（JSONL 追加、批量 flush、按体积轮转、保留 N 片）
+   ├── CapturePipeline（stdout/stderr 读取 → 有界 channel → 串行写盘）
+   │      ├── 输出 reader 任务 ×2（stdout / stderr）
+   │      ├── CaptureSink（唯一写入口：状态循环与退出收尾都只能经它写）
+   │      └── 写盘任务 ×1 ── LogWriter（JSONL 追加、批量 flush、轮转、保留 N 片）
+   ├── 状态采集循环（StatusProbe → 变化才写 status 事件，经同一个 CaptureSink）
    └── ProcessBackend（平台抽象：spawn / kill_tree / attach / is_running / wait）
           └── WindowsProcessBackend（Job Object + 启动时间校验）
 ```
 
 `SessionManager` 只依赖 `Arc<dyn ProcessBackend>`，因此可替换实现（macOS 在 M4 接入）。
+
+### 单 writer 所有权（轮转与保留策略成立的前提）
+
+**硬约束：一个会话目录下，同一时刻只能有一个 `LogWriter`。**
+
+原因是 `LogWriter` 把轮转状态保存在自己内存里——`shard_seq`（下一个分片序号）
+和 `shards`（已轮转出的分片列表，用于保留策略）。多开一个 writer 就等于多一份
+「它自己以为的分片现状」：
+
+| 现象 | 机制 |
+| --- | --- |
+| 分片序号乱跳 | 后开的 writer 看不到已有分片，`shard_seq` 从 0 重新计数，落到 `events.28.jsonl` 这类错位序号 |
+| 旧分片永远删不掉 | prune 只按自己那份不完整的 `shards` 列表删，真正最旧的分片不在列表里 |
+| 保留上限形同虚设 | 上述两条叠加 → 长跑服务分片无限增长，最终撑爆磁盘 |
+
+**做法**（实现见 `runtime::capture::CaptureSink`）：
+
+```text
+任意事件来源（输出 reader / 状态循环 / 退出收尾）
+        │  CaptureSink::{try_write, write, finish}
+        ▼
+   mpsc channel（有界）
+        │
+        ▼
+   唯一的写盘任务 ── 独占 LogWriter ── events.jsonl / events.&lt;seq&gt;.jsonl
+```
+
+| 方法 | 语义 | 使用方 |
+| --- | --- | --- |
+| `try_write` | **非阻塞**：通道满只累计丢弃计数（由 `overflow` 事件如实反映），绝不阻塞子进程 | 输出 reader |
+| `write` | **背压 + 落盘确认**：带 oneshot 回执，写完并 flush 才返回，返回 true 即「此刻读日志就能看到」 | 状态循环、重关联补写 |
+| `finish` | **收尾**：写入后写盘任务关闭文件并退出，之后任何写都会失败，`exit` 因此必然是最后一条 | 退出收尾 |
+
+> **为什么用 channel 而不是 `Mutex<LogWriter>`**：`LogWriter::write_event` / `close` 都是 async，
+> 包进互斥锁会让每个状态事件与整条输出管道的 flush 抢同一把锁，退出收尾还要再抢一次；
+> channel 让写盘任务天然独占 writer，事件顺序（output → overflow → exit）由队列本身保证，
+> 同时保住「生产者绝不阻塞子进程」这条不变量。
 
 ## 生命周期状态机
 
@@ -110,6 +150,7 @@ pub struct SessionSnapshot {
     pub state: RunState,          // Running | Exited | Crashed
     pub started_at: String,       // RFC3339
     pub last_exit: Option<ExitInfo>,
+    pub latest_status: Option<StatusSnapshot>,  // 最近一次采集到的窗口标题 / 监听端口
 }
 
 pub struct ExitInfo {
@@ -146,14 +187,15 @@ for snapshot in manager.list_active().await {
 
 | 项 | 默认值 | 说明 |
 | --- | --- | --- |
-| channel 容量 | 8192 行 | 有界队列，防止内存无限增长 |
+| channel 容量 | 8192 条事件 | 有界队列，防止内存无限增长 |
 | 单行上限 | 1 MiB | 超长行被切成多条 `output` 事件，不丢内容 |
 | flush 批量 | 每 64 条或每 100ms | 兼顾吞吐与时延 |
 | 退出时 | 强制 flush + sync | 进程退出即可见完整日志 |
 
 三条硬性保证：
 
-1. **不阻塞子进程**：channel 满时用 `try_send`，失败只累计丢弃计数。若改成 await，子进程会因写满管道而卡死；
+1. **不阻塞子进程**：输出流用 `try_send`，失败只累计丢弃计数。若改成 await，子进程会因写满管道而卡死；
+   （状态与退出事件走 `await send`，见上文「单 writer 所有权」——它们数量极少，丢掉才是真丢信息。）
 2. **不静默丢行**：丢弃计数以 `overflow` 事件写入 JSONL；
 3. **不因非法 UTF-8 丢行**：用 `read_until(b'\n')` 读原始字节再解码，而不是 `lines()`（后者遇非法 UTF-8 会整行丢弃）。
 
@@ -180,6 +222,57 @@ cp1252 / latin-1 虽然「总能解码」，但产出西欧字母对中文日志
 等于用另一种方式掩盖损坏。本项目只做与目标平台匹配的回退链。
 
 Linux/macOS 暂无平台回退编码（系统默认 UTF-8），会直接进入 lossy 分支并如实标记。
+
+## 状态采集（status 事件）
+
+需求基线要求「新增状态项不改核心流程」。做法是把每个状态项做成一个独立的 `StatusProbe`，
+由 `CompositeProbe` 组合：
+
+```text
+StatusProbe (trait)                     一个状态项 = 一个 probe
+   ├── WindowTitleProbe    -> window_title   （EnumWindows + GetWindowTextW）
+   ├── ListeningPortsProbe -> ports          （GetExtendedTcpTable）
+   └── （未来）CpuProbe    -> 只实现 trait 并注册进组合，不改 SessionManager
+CompositeProbe                          顺序执行，字段级合并，单项失败不影响其它
+   └── StatusSnapshot                   { window_title, ports }
+```
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CaptureConfig::status_interval` | 3s | 采集间隔；`None` 或零表示**禁用**状态采集（不写任何 status 事件） |
+| `CaptureConfig::max_status_events` | 12 次/分钟 | 滑动 60 秒窗口限流；`None` 表示不限 |
+
+三条约定：
+
+1. **变化才写**：与上一次采样结果比较，只有不同才追加 `status` 事件，避免日志刷屏；
+2. **快照始终最新**：无论是否写事件，最新值都写进 `SessionSnapshot::latest_status`，
+   限流只影响日志，不影响 GUI 读到的实时状态；
+3. **失败静默**：probe 只返回字段值，不返回 `Result`、不写错误事件、绝不 panic
+   （`CompositeProbe` 用 `catch_unwind` 兜底单个 probe 的 panic）。
+
+窗口标题按「整棵进程树」判定，并在多个可见窗口里**按面积取最大者**（排除带
+`WS_EX_TOOLWINDOW` 的工具窗口）：GUI 应用常见多个可见窗口，主窗口通常是面积最大的那个；
+而启动器直接拉起的往往只是 shim，真正的窗口属于它的子进程。
+
+### 状态循环的退出信号
+
+状态循环有**两条**退出路径：
+
+```text
+每轮开头：会话 state 已不是 Running ──► 返回
+等下一轮：tokio::select! {
+             sleep(status_interval)  ──► 继续下一轮
+             exit_signal.notified()  ──► 立刻返回      ← 正常路径走这条
+          }
+```
+
+`exit_signal` 是一个 `Arc<tokio::sync::Notify>`，由会话收尾任务在**等进程退出之后立刻**
+`notify_one`。为什么必须有它：如果只靠 `sleep` + 轮询 `RunState`，进程退出后循环仍要睡满
+一个采集间隔才醒来，而收尾又要等循环结束才能写 `exit` —— 一次停止就要白等 3 秒
+（默认间隔），集成测试因此从 ~2s 退化到 51s。
+
+`DURATION_STATUS_SHUTDOWN_BUDGET`（5s）仍然保留，但**正常路径不会消耗它**：
+它只兜住「probe 卡在系统调用里、来不及响应信号」的极端情况，超时即 abort，绝不泄漏 task。
 
 ## Windows 进程后端
 
@@ -226,7 +319,6 @@ OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
 
 1. **重启后无法接管旧 stdout/stderr**：管道句柄随父进程消失，重关联只能恢复「进程是否还活着」的状态，无法继续读取输出。这些会话的日志会停在重启前的位置。
 2. **重关联后的 kill_tree 是尽力而为**：拿不到原 Job 句柄，只能靠父子关系枚举；若进程中途改变父子关系（如双 fork），可能有遗漏。
-3. **窗口标题与监听端口未采集**：`status` 事件的 `window_title` / `ports` 当前恒为 `null`，留待 M1c。
 4. **非 Windows 平台未实现**：`FallbackProcessBackend` 所有方法返回 `Unsupported`，macOS 对齐在 M4。
 
 ## 相关文档
