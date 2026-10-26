@@ -27,6 +27,7 @@
 //! 3. **不因非法 UTF-8 丢行**：用 read_until(b'\n') 读原始字节再 from_utf8_lossy，
 //!    而不是 lines()（后者遇到非法 UTF-8 会直接返回错误并丢掉整行）。
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -105,6 +106,94 @@ pub fn strip_line_ending(raw: &[u8]) -> &[u8] {
     &raw[..end]
 }
 
+/// 剥掉一行文本里的 ANSI 转义序列（CSI / OSC / 单字符 ESC）。
+///
+/// 为什么要在**落盘前**剥：子进程一旦不是 TTY（我们就是这种情况——标准流全被重定向成
+/// 管道），理智的程序本该关掉彩色输出，但很多 CLI（vite / pnpm / concurrently / cargo）
+/// 仍然无条件吐 ANSI 码。这些字节会原样进 events.jsonl，导致：
+/// - 界面显示成 `[33m` 之类的残渣（真身是 `ESC[33m`）；
+/// - 日志文件无法 grep，结构化事件里的文本字段被污染；
+/// - 任何后续消费者（导出、搜索、别的 GUI）都得各自再剥一遍。
+/// 因此在唯一入口剥一次，让落盘内容就是干净文本。
+///
+/// 处理三类序列（其余原样保留，宁可少剥也不误删正文）：
+/// 1. CSI：`ESC [` + 参数（0x30-0x3F）* + 中间字节（0x20-0x2F）* + 终止字节（0x40-0x7E）。
+///    覆盖颜色（`ESC[33m`）、光标移动、清屏等绝大多数控制序列。
+/// 2. OSC：`ESC ]` ... 以 `BEL` 或 `ESC \` 结尾。用于设置终端标题等；
+///    这类序列可能很长，若未遇到终止符则**丢弃到行尾**（残缺序列本来也无意义）。
+/// 3. 其余 `ESC` + 单个字符（如 `ESC(B` 字符集切换、`ESC 7` 保存光标）。
+///
+/// 不含 `ESC` 的行零成本直接返回借用，不产生分配。
+fn strip_ansi(text: Cow<'_, str>) -> Cow<'_, str> {
+    if !text.contains('\u{1b}') {
+        return text;
+    }
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1b {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        // ESC 出现在行尾：单独一个 ESC 没有意义，丢掉
+        let Some(&next) = bytes.get(i + 1) else {
+            break;
+        };
+        match next {
+            b'[' => {
+                // CSI：跳过参数与中间字节，直到终止字节
+                let mut j = i + 2;
+                while j < bytes.len() {
+                    let b = bytes[j];
+                    if (0x40..=0x7e).contains(&b) {
+                        j += 1;
+                        break;
+                    }
+                    // 参数区/中间区之外出现奇怪字节：当作序列在此中断，原地恢复
+                    if !(0x20..=0x3f).contains(&b) {
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+            }
+            b']' => {
+                // OSC：直到 BEL 或 ST(ESC \)；找不到终止符就丢弃到行尾
+                let mut j = i + 2;
+                loop {
+                    if j >= bytes.len() {
+                        i = bytes.len();
+                        break;
+                    }
+                    if bytes[j] == 0x07 {
+                        i = j + 1;
+                        break;
+                    }
+                    if bytes[j] == 0x1b && bytes.get(j + 1) == Some(&b'\\') {
+                        i = j + 2;
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+            // 单字符 ESC 序列：ESC + 一个字节（含 ESC(B 这类三字节的近似处理，
+            // 多出的 '(' 'B' 会成为可见字符——但这种序列在应用输出里极罕见，
+            // 宁可保留一个可读残渣也不冒险吞掉正文）
+            _ => {
+                i += 2;
+            }
+        }
+    }
+    // SAFETY 边界：只在 ASCII 控制字节处切分，未切断任何多字节字符，
+    // 因此结果仍是合法 UTF-8。用 from_utf8_lossy 兜底而非 expect，
+    // 避免任何未预料的输入让读日志这条路径 panic。
+    match String::from_utf8(out) {
+        Ok(clean) => Cow::Owned(clean),
+        Err(e) => Cow::Owned(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
+}
 /// 按「严格 UTF-8 → 平台回退编码 → lossy」的顺序解码一行，并给出编码标记。
 ///
 /// 为什么不用 `from_utf8_lossy` 兜底：它会把 GBK 等非 UTF-8 字节静默替换成 U+FFFD，
@@ -120,7 +209,7 @@ pub fn decode_line_lossless(raw: &[u8]) -> (String, OutputEncoding) {
 
     // 1) 严格 UTF-8：合法即无损返回
     if let Ok(text) = std::str::from_utf8(bytes) {
-        return (text.to_string(), OutputEncoding::Utf8);
+        return (strip_ansi(Cow::Borrowed(text)).into_owned(), OutputEncoding::Utf8);
     }
 
     // 2) 超长行按字节切分留下的残片：必须按 UTF-8 保留，不能整体改判成 GBK
@@ -131,15 +220,15 @@ pub fn decode_line_lossless(raw: &[u8]) -> (String, OutputEncoding) {
         } else {
             OutputEncoding::Lossy
         };
-        return (text, encoding);
+        return (strip_ansi(Cow::Owned(text)).into_owned(), encoding);
     }
 
     // 3) 平台回退编码
     match decode_with_platform_fallback(bytes) {
-        Some(text) => (text, OutputEncoding::Gbk),
+        Some(text) => (strip_ansi(Cow::Owned(text)).into_owned(), OutputEncoding::Gbk),
         // 4) 都不行：lossy 兜底，但必须如实标记
         None => (
-            String::from_utf8_lossy(bytes).into_owned(),
+            strip_ansi(Cow::Owned(String::from_utf8_lossy(bytes).into_owned())).into_owned(),
             OutputEncoding::Lossy,
         ),
     }
@@ -657,6 +746,56 @@ mod tests {
     async fn reads_trailing_line_without_newline() {
         let lines = collect_lines(b"alpha\nbeta", MAX_LINE_BYTES).await;
         assert_eq!(lines, vec!["alpha", "beta"]);
+    }
+
+    /// ANSI 颜色码必须在落盘前被剥掉，否则界面显示成 `[33m` 残渣。
+    ///
+    /// 这是真实案例：vite 的 CJS 警告 `ESC[33m...ESC[39m` 曾被原样写进 events.jsonl。
+    #[test]
+    fn strips_ansi_color_codes() {
+        let raw = "\u{1b}[33mThe CJS build of Vite is deprecated.\u{1b}[39m";
+        let (text, encoding) = decode_line_lossless(raw.as_bytes());
+        assert_eq!(text, "The CJS build of Vite is deprecated.");
+        assert_eq!(encoding, OutputEncoding::Utf8);
+        assert!(!text.contains('\u{1b}'), "不得残留 ESC: {text:?}");
+    }
+
+    /// 同一行里有多段颜色时全部剥掉，且正文顺序不变。
+    #[test]
+    fn strips_multiple_ansi_spans_in_one_line() {
+        let raw = "\u{1b}[32mok\u{1b}[0m and \u{1b}[1;31mfail\u{1b}[0m";
+        let (text, _) = decode_line_lossless(raw.as_bytes());
+        assert_eq!(text, "ok and fail");
+    }
+
+    /// CSI 光标控制（如清行 ESC[2K）也属于转义序列，同样剥掉。
+    #[test]
+    fn strips_ansi_cursor_control() {
+        let raw = "progress\u{1b}[2K\u{1b}[1Gdone";
+        let (text, _) = decode_line_lossless(raw.as_bytes());
+        assert_eq!(text, "progressdone");
+    }
+
+    /// OSC（设置终端标题）整段剥掉，包括 BEL 终止符。
+    #[test]
+    fn strips_ansi_osc_sequence() {
+        let raw = "\u{1b}]0;window title\u{7}after";
+        let (text, _) = decode_line_lossless(raw.as_bytes());
+        assert_eq!(text, "after");
+    }
+
+    /// 没有 ESC 的行必须原样返回，且不得因剥 ANSI 而改变（含中文）。
+    #[test]
+    fn plain_text_is_untouched_by_ansi_stripping() {
+        let (text, _) = decode_line_lossless("中文测试".as_bytes());
+        assert_eq!(text, "中文测试");
+    }
+
+    /// 行尾只剩一个孤立 ESC 时不能 panic，正文保留。
+    #[test]
+    fn trailing_lone_esc_does_not_panic() {
+        let (text, _) = decode_line_lossless("tail\u{1b}".as_bytes());
+        assert_eq!(text, "tail");
     }
 
     /// CRLF 的行尾 \r 必须去掉，否则 Windows 输出会带上多余回车。
