@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">app_catch — Hopper</title>
+  <g id="symbol" fill="#000">
+    <path fill-rule="evenodd" d="M66 32 H190 A34 34 0 0 1 224 66 V190 A34 34 0 0 1 190 224 H66 A34 34 0 0 1 32 190 V66 A34 34 0 0 1 66 32 Z M82 74 H174 L144 138 V184 H112 V138 Z"/>
+  </g>
+</svg>

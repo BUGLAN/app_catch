@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">app_catch — Bracket catch</title>
+  <g id="symbol" fill="#000">
+    <path d="M88 44 H44 V204 H88 V176 H72 V72 H88 Z"/>
+    <path d="M168 44 H212 V204 H168 V176 H184 V72 H168 Z"/>
+    <circle cx="128" cy="124" r="22"/>
+  </g>
+</svg>

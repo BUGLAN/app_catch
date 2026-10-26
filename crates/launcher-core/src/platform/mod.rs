@@ -356,6 +356,15 @@ impl IconTarget {
 pub trait IconCapture: Send + Sync {
     /// 抓取图标并返回缓存后的 PNG 路径；抓不到返回 `None`。
     fn capture(&self, target: &IconTarget) -> Option<PathBuf>;
+
+    /// 忽略缓存、强制重新抓取一次。
+    ///
+    /// 用在「用户点了启动、窗口已经出来」的时刻：这时窗口档位才第一次可能成功，
+    /// 而磁盘上很可能已经躺着一张更早抓到的低档位图（例如 `pnpm.cmd` 的通用图标）。
+    /// 默认实现退化为 [`Self::capture`]（非 Windows 平台没有窗口概念，无需强制）。
+    fn recapture(&self, target: &IconTarget) -> Option<PathBuf> {
+        self.capture(target)
+    }
 }
 
 #[cfg(test)]

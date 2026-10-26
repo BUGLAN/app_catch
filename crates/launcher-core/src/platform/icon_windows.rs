@@ -50,7 +50,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_GETICON,
 };
 
-use crate::platform::icon::{IconSource, RgbaImage, load_png_file, resolve_and_cache};
+use crate::platform::icon::{
+    CapturedIcon, IconSource, IconTier, RgbaImage, load_png_file, resolve_and_cache,
+};
 use crate::platform::{IconCapture, IconTarget};
 
 /// 发 WM_GETICON 的超时（毫秒）。
@@ -589,11 +591,18 @@ impl IconSource for WindowsIconCapture {
     ///
     /// 三档之间是「失败即继续」而不是「失败即放弃」：
     /// 用户填了一个已被删除的图标路径，不该连带让 exe 图标也抓不到。
-    fn produce(&self, target: &IconTarget) -> Option<RgbaImage> {
+    ///
+    /// 每一档都带上 [`IconTier`]：调用方靠它判断这张图能否覆盖缓存里已有的图。
+    ///
+    /// **exe 档位会跳过脚本**：`pnpm.cmd` / `npm.cmd` 这类启动脚本没有图标资源，
+    /// Shell 只会返回通用批处理图标；把它当成真图标缓存下来，就是
+    /// 「所有 Electron 应用显示同一张齿轮图」的原因。此时宁可返回 `None`
+    /// 让前端用内置默认图，也不要把错误信息固化进缓存。
+    fn produce(&self, target: &IconTarget) -> Option<CapturedIcon> {
         // 1) 用户自定义图标（file_icon 内部会拿 ICON_API_LOCK）
         if let Some(custom) = target.custom_icon.as_deref() {
             if let Some(image) = file_icon(custom) {
-                return Some(image);
+                return Some(CapturedIcon::new(image, IconTier::Custom));
             }
         }
 
@@ -601,14 +610,16 @@ impl IconSource for WindowsIconCapture {
         if let Some(pid) = target.pid {
             let pids = crate::platform::collect_tree_pids(pid);
             if let Some(image) = window_icon_for_pids(&pids) {
-                return Some(image);
+                return Some(CapturedIcon::new(image, IconTier::Window));
             }
         }
 
-        // 3) exe 资源图标
+        // 3) exe 资源图标（脚本文件不参与：见上方说明）
         if let Some(exe) = target.executable.as_deref() {
-            if let Some(image) = file_icon(exe) {
-                return Some(image);
+            if !crate::platform::icon::is_script(exe) {
+                if let Some(image) = file_icon(exe) {
+                    return Some(CapturedIcon::new(image, IconTier::Exe));
+                }
             }
         }
 
@@ -625,6 +636,15 @@ impl IconCapture for WindowsIconCapture {
     fn capture(&self, target: &IconTarget) -> Option<PathBuf> {
         let icons_dir = crate::paths::icons_dir().ok()?;
         resolve_and_cache(self, &icons_dir, target)
+    }
+
+    /// 忽略缓存强制重抓：会话刚启动、窗口刚出现时用这一次。
+    ///
+    /// 典型场景正是本次修复的问题：应用第一次打开列表时还没运行，
+    /// 缓存里落下的是 `pnpm.cmd` 的通用图标；等窗口起来后必须能把它换掉。
+    fn recapture(&self, target: &IconTarget) -> Option<PathBuf> {
+        let icons_dir = crate::paths::icons_dir().ok()?;
+        crate::platform::icon::resolve_and_cache_forced(self, &icons_dir, target)
     }
 }
 

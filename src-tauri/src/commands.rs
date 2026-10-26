@@ -285,10 +285,15 @@ pub async fn recover_sessions(state: State<'_, AppState>) -> Result<BootReport, 
 ///    \`SHGetFileInfoW\`，后者是 Shell API，遇到网络盘或冷缓存时可能几十毫秒起步，
 ///    不能占住 tokio 的 worker 线程。
 /// 3. **失败绝不报错**：整条链路返回 \`Option\`，任何异常都收敛成 \`None\`。
+///
+/// `force = true` 时忽略磁盘缓存强制重抓一次；只在「会话刚启动」那一刻由前端传，
+/// 因为窗口是这时才出现的，窗口档位（\`WM_GETICON\`）第一次可能拿到应用自设的真图标，
+/// 必须允许它覆盖更早抓到的 \`pnpm.cmd\` 通用图标。默认 \`false\`，保持原有缓存优先行为。
 #[tauri::command]
 pub async fn get_app_icon(
     state: State<'_, AppState>,
     app_id: String,
+    force: Option<bool>,
 ) -> Result<Option<String>, CommandError> {
     let app_id = parse_app_id(&app_id)?;
     let app = state.store().get(&app_id).map_err(CommandError::from)?;
@@ -303,8 +308,14 @@ pub async fn get_app_icon(
         .with_pid(pid);
 
     // 图标抓取是纯尽力而为：即使 spawn_blocking 本身失败也只是「没有图标」
+    let force = force.unwrap_or(false);
     let captured = tokio::task::spawn_blocking(move || {
-        launcher_core::platform::default_icon_capture().capture(&target)
+        let capture = launcher_core::platform::default_icon_capture();
+        if force {
+            capture.recapture(&target)
+        } else {
+            capture.capture(&target)
+        }
     })
     .await
     .ok()

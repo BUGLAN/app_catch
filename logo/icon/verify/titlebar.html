@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--accent:#5b5ce0;--text-on-accent:#fff;--surface-raised:#0b0e16;--text-primary:#e9edf4}
+.light{--accent:#4b56d2;--text-on-accent:#fff;--surface-raised:#faf9f5;--text-primary:#1a1d26}
+body{margin:0;font-family:system-ui}
+.row{display:flex;gap:24px;padding:20px}
+.pane{display:flex;align-items:center;gap:8px;padding:14px 18px;border-radius:10px}
+.dark{background:#0b0e16;color:#e9edf4}
+.lightp{background:#faf9f5;color:#1a1d26}
+.titlebar-mark{display:grid;place-items:center;width:22px;height:22px}
+.titlebar-mark svg{display:block}
+h3{margin:0 0 12px;font-size:12px;font-weight:600;opacity:.6;letter-spacing:.08em;text-transform:uppercase}
+</style></head><body>
+<div class="row">
+  <div class="pane dark"><h3>dark</h3></div>
+  <div class="pane lightp light"><h3>light</h3></div>
+</div>
+<script>
+const mark = (s) => `<svg width="${s}" height="${s}" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7.5" fill="var(--accent)"/><g fill="var(--text-on-accent)"><rect x="7.5" y="7.9" width="17" height="4.2" rx="2.1"/><rect x="7.5" y="13.9" width="12.2" height="4.2" rx="2.1"/><rect x="7.5" y="19.9" width="7.5" height="4.2" rx="2.1"/></g></svg>`;
+document.querySelectorAll('.pane').forEach(p => {
+  p.querySelector('h3').insertAdjacentHTML('afterend',
+    `<div class="titlebar-mark">${mark(22)}</div><span style="font-size:13px;font-weight:600">app_catch</span>`);
+});
+</script></body></html>

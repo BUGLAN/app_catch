@@ -282,6 +282,67 @@ pub fn looks_like_png(bytes: &[u8]) -> bool {
 // 抓取链路（来源抽象 + 缓存策略）
 // ---------------------------------------------------------------------------
 
+/// 图标来源的「档位」——决定这张图可信到什么程度，进而决定它能不能覆盖已有缓存。
+///
+/// 顺序即优先级：`Custom > Window > Exe`。
+/// 缓存里记录档位的意义是**只许升级、不许降级**：
+/// 窗口档位抓到的真图标，绝不能被下一次「exe 档位」的通用图标覆盖掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IconTier {
+    /// 从 exe 资源或 Shell 抠到的图标。开发态下往往是解释器/脚本的通用图标，可信度最低。
+    Exe = 1,
+    /// 从运行中窗口的 `WM_GETICON` / 窗口类图标抓到的图标。应用自己设置的，可信度高。
+    Window = 2,
+    /// 用户在配置里显式指定的图标。始终优先，且永不被自动抓取覆盖。
+    Custom = 3,
+}
+
+impl IconTier {
+    /// 写进 sidecar 的稳定字符串（不要随意改，改了等于让旧缓存全部失效）。
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Exe => "exe",
+            Self::Window => "window",
+            Self::Custom => "custom",
+        }
+    }
+
+    /// 从 sidecar 内容解析档位；无法识别时返回 `None`（按「未知档位」处理）。
+    pub fn from_tag(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "exe" => Some(Self::Exe),
+            "window" => Some(Self::Window),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
+/// 一次抓取的结果：位图 + 它来自哪一档。
+#[derive(Clone, PartialEq, Eq)]
+pub struct CapturedIcon {
+    /// 原始位图（尚未规范化）。
+    pub image: RgbaImage,
+    /// 这张图来自哪一档，决定它能否覆盖已有缓存。
+    pub tier: IconTier,
+}
+
+impl CapturedIcon {
+    /// 用位图与档位构造。
+    pub fn new(image: RgbaImage, tier: IconTier) -> Self {
+        Self { image, tier }
+    }
+}
+
+impl std::fmt::Debug for CapturedIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CapturedIcon")
+            .field("image", &self.image)
+            .field("tier", &self.tier)
+            .finish()
+    }
+}
+
 /// 图标来源：只负责「从目标里抠出一张原始位图」，**不负责**缓存与规范化。
 ///
 /// 把「从哪拿图标」（平台相关）与「拿不到怎么办、缓存怎么算」
@@ -290,19 +351,35 @@ pub fn looks_like_png(bytes: &[u8]) -> bool {
 /// 2. 「缓存命中就不再抓」这条规则可以被**计数验证**——
 ///    用一个记账的假来源调用两次，断言它只被问过一次。
 pub trait IconSource {
-    /// 从目标里抠图标；拿不到返回 \`None\`（不报错）。
-    fn produce(&self, target: &IconTarget) -> Option<RgbaImage>;
+    /// 从目标里抠图标；拿不到返回 `None`（不报错）。
+    ///
+    /// 返回值带上 [`IconTier`]：调用方据此判断这张图是否值得替换已有缓存。
+    fn produce(&self, target: &IconTarget) -> Option<CapturedIcon>;
 }
 
 /// 抓取并缓存的完整链路（与平台无关的那一半）。
 ///
 /// 顺序：**缓存命中 -> 让来源产图 -> 规范化 -> 落盘**。
 ///
-/// 返回 \`None\` 的含义是「没有图标」，调用方应回落到前端内置默认图——
+/// 返回 `None` 的含义是「没有图标」，调用方应回落到前端内置默认图——
 /// 这不是错误，Python 服务类应用（无窗口、exe 是解释器）就是这种情况。
 ///
-/// 缓存命中时**根本不调用** \`source\`：这是「二次调用不重复抓取」的实现保证，
-/// 也是图标抓取不会拖慢第二次打开应用列表的原因。
+/// # 档位规则（M3 修订）
+///
+/// 光有「文件在就命中」会导致**错图标被永久固化**：某次在应用还没起来时抓到了
+/// `pnpm.cmd` 的通用批处理图标，写进缓存后源文件 mtime 永远比缓存旧，
+/// 于是失效判定永远是 `Ready`，运行时窗口的真图标再也没机会写进来。
+///
+/// 所以缓存旁边多存一个 sidecar（`<app_id>.tier`）记录**这张图来自哪一档**：
+///
+/// | 已有缓存档位 | 本次有无 pid（能否查窗口） | 行为 |
+/// | --- | --- | --- |
+/// | `Window` / `Custom` | 任意 | 直接复用，不再抓 |
+/// | `Exe` / 未知 | 否 | 直接复用（不可能升级） |
+/// | `Exe` / 未知 | 是 | **重抓一次**，抓到更高档位才覆盖 |
+///
+/// 并且**只升不降**：本次抓到的档位不高于已有缓存时保留旧图，
+/// 避免「窗口恰好没取到」把真图标降级成解释器图标。
 pub fn resolve_and_cache(
     source: &dyn IconSource,
     icons_dir: &Path,
@@ -311,17 +388,85 @@ pub fn resolve_and_cache(
     // 没有 app_id 就没有缓存身份：直接走兜底，不猜文件名
     let app_id = target.app_id.as_ref()?;
     let cache = cache_path(icons_dir, app_id);
+    let tier_file = tier_path(icons_dir, app_id);
 
-    if cache_state(&cache, target.executable.as_deref()) == CacheState::Ready {
-        return Some(cache);
+    let state = cache_state(&cache, target.executable.as_deref());
+    let cached_tier = read_tier(&tier_file);
+    // 只有带 pid 时才可能从窗口档位拿到更好的图
+    let can_improve = target.pid.is_some();
+
+    if state == CacheState::Ready {
+        // 已经是最高档位，或本次根本没法问窗口：直接复用
+        let top_tier = matches!(cached_tier, Some(IconTier::Window) | Some(IconTier::Custom));
+        if top_tier || !can_improve {
+            // 例外：旧版本写下的缓存没有档位信息，而它的来源命令现在被判定为脚本。
+            // 这种缓存**几乎必然是**当年把 .cmd 当 exe 抽出来的通用图标，
+            // 留着就是继续骗用户；删掉并通过返回 None 让前端显示内置默认图。
+            if cached_tier.is_none() && target.executable.is_none() {
+                let _ = std::fs::remove_file(&cache);
+                let _ = std::fs::remove_file(&tier_file);
+                return None;
+            }
+            return Some(cache);
+        }
     }
 
-    let image = source.produce(target)?;
-    if image.is_fully_transparent() {
+    let Some(captured) = source.produce(target) else {
+        // 抓不到：保留已有缓存（可能是好的，只是这次没抓到），
+        // 但如果是「无档位 + 无 exe」这种可疑组合，上面的分支已经处理掉了。
+        return if state == CacheState::Ready { Some(cache) } else { None };
+    };
+    if captured.image.is_fully_transparent() {
         // 全透明的「图标」等于没有图标，不落盘，避免把空图当缓存固化下来
         return None;
     }
-    write_cache(&cache, &image.normalize())
+
+    // 只升不降：缓存仍然新鲜、且本次档位没有更高时保留旧图。
+    // （缓存 Stale 说明源文件更新过，此时同档位也应该重写。）
+    if state == CacheState::Ready {
+        if let Some(existing) = cached_tier {
+            if existing >= captured.tier {
+                return Some(cache);
+            }
+        }
+    }
+
+    let written = write_cache(&cache, &captured.image.normalize())?;
+    // sidecar 写失败不影响图标可用性，只是下次会退化成「未知档位」
+    write_tier(&tier_file, captured.tier);
+    Some(written)
+}
+
+/// 忽略缓存、强制重新抓一次（[`resolve_and_cache`] 的 `force` 版本）。
+///
+/// 语义差别只有一条：**不看 `CacheState`、也不做档位比较**，一定去问来源。
+/// 但仍然保留「只升不降」的最后一层保护之外的所有优化都没有了——
+/// 这是给「窗口刚起来」那一刻用的：此时我们明确知道有新信息可拿。
+///
+/// 抓到的档位若低于已有缓存，仍然保留旧图（宁可保守，不要用更差的结果覆盖好的）。
+pub fn resolve_and_cache_forced(
+    source: &dyn IconSource,
+    icons_dir: &Path,
+    target: &IconTarget,
+) -> Option<PathBuf> {
+    let app_id = target.app_id.as_ref()?;
+    let cache = cache_path(icons_dir, app_id);
+    let tier_file = tier_path(icons_dir, app_id);
+    let cached_tier = read_tier(&tier_file);
+
+    let captured = source.produce(target)?;
+    if captured.image.is_fully_transparent() {
+        return None;
+    }
+    if let Some(existing) = cached_tier {
+        if existing > captured.tier {
+            // 已有更高档位的图（例如用户自定义图标）：不要被这次结果降级
+            return Some(cache);
+        }
+    }
+    let written = write_cache(&cache, &captured.image.normalize())?;
+    write_tier(&tier_file, captured.tier);
+    Some(written)
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +476,33 @@ pub fn resolve_and_cache(
 /// 某个应用的图标缓存文件路径：`<icons_dir>/<app_id>.png`。
 pub fn cache_path(icons_dir: &Path, app_id: &AppId) -> PathBuf {
     icons_dir.join(format!("{app_id}{ICON_FILE_SUFFIX}"))
+}
+
+/// 缓存档位 sidecar 的扩展名。
+pub const ICON_TIER_EXT: &str = "tier";
+
+/// 档位 sidecar 的路径：`<icons_dir>/<app_id>.tier`。
+///
+/// 单独存一个文件而不是塞进 PNG 的 tEXt 块：PNG 元数据要用 `png` crate 的
+/// 编码器 API 才能读写，而 sidecar 一个 `fs::write` 就够了；
+/// 更重要的是**旧版本写下的缓存没有 sidecar**，此时读出来是 `None`，
+/// 语义正好是「未知档位」——老缓存会被当作可升级，自动修好历史遗留的错图。
+pub fn tier_path(icons_dir: &Path, app_id: &AppId) -> PathBuf {
+    icons_dir.join(format!("{app_id}.{ICON_TIER_EXT}"))
+}
+
+/// 读取缓存档位；文件缺失或内容无法识别都返回 `None`（未知档位）。
+pub fn read_tier(path: &Path) -> Option<IconTier> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    IconTier::from_tag(&raw)
+}
+
+/// 写入缓存档位；失败静默忽略（档位只是优化，不该影响图标可用性）。
+pub fn write_tier(path: &Path, tier: IconTier) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, tier.tag());
 }
 
 /// 缓存文件的就绪状态。
@@ -446,6 +618,23 @@ fn base64_encode(input: &[u8]) -> String {
 // 会话可执行文件解析（供图标抓取用）
 // ---------------------------------------------------------------------------
 
+/// 这些扩展名**不是图标来源**：Windows 对脚本文件没有内嵌图标资源，
+/// Shell 只会返回「通用批处理/脚本」图标（那张「窗口+齿轮」的灰白图）。
+///
+/// 实测（2026-10-25）：`pnpm.cmd` 经 `SHGetFileInfoW` / `ExtractAssociatedIcon`
+/// 得到的就是这张通用图，与 `node.exe`（绿色六边形）、`electron.exe`（原子标志）
+/// 的真实图标完全不同。所以脚本不能当成 exe 去抽图标——
+/// 应当视为「没有 exe」，让调用方退到窗口档位或用内置默认图。
+const SCRIPT_EXTENSIONS: [&str; 6] = ["cmd", "bat", "ps1", "vbs", "js", "sh"];
+
+/// 路径是否是「脚本」而不是可执行文件（按扩展名判断）。
+pub fn is_script(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| SCRIPT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
 /// 从应用配置里推测「真正的可执行文件路径」。
 ///
 /// 图标抓取需要 exe 才能取资源图标，但用户填的命令形态很杂：
@@ -466,8 +655,13 @@ pub fn resolve_executable(command: &str) -> Option<PathBuf> {
     let path = Path::new(trimmed);
 
     // 1) 已经是存在的文件：直接用
+    //    **脚本除外**：Windows 不为 .cmd/.bat 提供图标资源，抽出来只会是通用图标。
     if path.is_file() {
-        return Some(path.to_path_buf());
+        return if is_script(path) {
+            None
+        } else {
+            Some(path.to_path_buf())
+        };
     }
 
     // 2) 带路径分隔符但文件不存在：不再猜测（可能是相对路径或写错了）
@@ -482,12 +676,14 @@ pub fn resolve_executable(command: &str) -> Option<PathBuf> {
         format!("{trimmed}.exe")
     };
 
+    // PATH 里找到的也可能是个脚本（pnpm.cmd 就在这里命中）：
+    // 同样不能当成图标来源，直接返回 None 让调用方退到窗口档位/兜底图。
     if let Some(found) = search_in_path(&with_ext) {
-        return Some(found);
+        return if is_script(&found) { None } else { Some(found) };
     }
     for dir in ["C:/Windows/System32", "C:/Windows"] {
         let candidate = Path::new(dir).join(&with_ext);
-        if candidate.is_file() {
+        if candidate.is_file() && !is_script(&candidate) {
             return Some(candidate);
         }
     }
@@ -535,6 +731,35 @@ mod executable_tests {
         assert!(resolve_executable("   ").is_none());
     }
 
+    /// 脚本文件（.cmd/.bat/.ps1…）不是图标来源：必须解析成 None。
+    ///
+    /// 守住实测 bug：`pnpm.cmd` 被当成 exe，抽出来的是 Windows 通用批处理图标，
+    /// 导致三个 Electron 应用显示同一张「窗口+齿轮」图。
+    #[test]
+    fn script_files_are_never_icon_sources() {
+        for name in ["pnpm.cmd", "run.bat", "build.ps1", "x.vbs", "y.sh", "a.CMD"] {
+            assert!(is_script(Path::new(name)), "{name} 应被识别为脚本");
+        }
+        for name in ["app.exe", "notepad.exe", "lib.dll", "noext"] {
+            assert!(!is_script(Path::new(name)), "{name} 不应被识别为脚本");
+        }
+    }
+
+    #[test]
+    fn existing_script_file_resolves_to_none() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let cmd = dir.path().join("pnpm.cmd");
+        std::fs::write(&cmd, b"@echo off").expect("写脚本桩失败");
+        assert!(
+            resolve_executable(&cmd.to_string_lossy()).is_none(),
+            "存在的 .cmd 文件不应被当成图标来源"
+        );
+
+        // 同样内容换成 .exe 就可以：证明过滤的是扩展名，不是文件内容
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"stub").expect("写 exe 桩失败");
+        assert!(resolve_executable(&exe.to_string_lossy()).is_some());
+    }
     /// Windows 上 \`cmd\` 一定能在 System32 或 PATH 里找到。
     #[cfg(windows)]
     #[test]
@@ -740,17 +965,23 @@ mod tests {
     // 抓取链路：缓存命中 / 失败不缓存 / 规范化入库
     // -----------------------------------------------------------------------
 
-    /// 记账用的假来源：记录被调用次数，返回固定位图。
+    /// 记账用的假来源：记录被调用次数，返回固定位图与档位。
     struct CountingSource {
         calls: std::sync::atomic::AtomicUsize,
         image: Option<RgbaImage>,
+        tier: IconTier,
     }
 
     impl CountingSource {
         fn new(image: Option<RgbaImage>) -> Self {
+            Self::with_tier(image, IconTier::Exe)
+        }
+
+        fn with_tier(image: Option<RgbaImage>, tier: IconTier) -> Self {
             Self {
                 calls: std::sync::atomic::AtomicUsize::new(0),
                 image,
+                tier,
             }
         }
 
@@ -760,10 +991,10 @@ mod tests {
     }
 
     impl IconSource for CountingSource {
-        fn produce(&self, _target: &IconTarget) -> Option<RgbaImage> {
+        fn produce(&self, _target: &IconTarget) -> Option<CapturedIcon> {
             self.calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.image.clone()
+            self.image.clone().map(|image| CapturedIcon::new(image, self.tier))
         }
     }
 
@@ -885,5 +1116,233 @@ mod tests {
             .open(path)
             .expect("打开文件失败");
         file.set_modified(when).expect("设置修改时间失败");
+    }
+}
+#[cfg(test)]
+mod tier_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 记账来源：可指定档位，并记录调用次数。
+    struct TierSource {
+        calls: AtomicUsize,
+        tier: IconTier,
+        color: [u8; 4],
+    }
+
+    impl TierSource {
+        fn new(tier: IconTier, color: [u8; 4]) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                tier,
+                color,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl IconSource for TierSource {
+        fn produce(&self, _target: &IconTarget) -> Option<CapturedIcon> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Some(CapturedIcon::new(
+                RgbaImage::solid(8, 8, self.color).expect("构造失败"),
+                self.tier,
+            ))
+        }
+    }
+
+    fn target(app: &str, pid: Option<u32>) -> IconTarget {
+        IconTarget::for_app(AppId::new(app).expect("合法 id")).with_pid(pid)
+    }
+
+    /// 核心修复：低档位图先入库，之后有窗口可查时必须能升档覆盖。
+    ///
+    /// 复现的正是实测 bug 的顺序：应用未运行时抓到 exe 档位（.cmd 通用图标），
+    /// 之后应用跑起来、窗口出现，必须允许窗口档位把它换掉。
+    #[test]
+    fn higher_tier_replaces_cached_lower_tier() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+
+        // 第一步：没有 pid（应用还没起），只能拿到 exe 档位
+        let exe_source = TierSource::new(IconTier::Exe, [10, 10, 10, 255]);
+        let cold = target("att", None);
+        let path = resolve_and_cache(&exe_source, &icons, &cold).expect("应抓到");
+        assert_eq!(read_tier(&tier_path(&icons, &AppId::new("att").unwrap())), Some(IconTier::Exe));
+        let low = load_png_file(&path).expect("读缓存");
+        assert_eq!(low.pixels[0..4], [10, 10, 10, 255]);
+
+        // 第二步：应用跑起来了（有 pid），窗口档位应覆盖它
+        let window_source = TierSource::new(IconTier::Window, [200, 30, 40, 255]);
+        let warm = target("att", Some(4242));
+        let path2 = resolve_and_cache(&window_source, &icons, &warm).expect("应抓到");
+        assert_eq!(path2, path, "缓存路径不变");
+        assert_eq!(window_source.calls(), 1, "有窗口时必须真的去问一次");
+        let high = load_png_file(&path2).expect("读缓存");
+        assert_eq!(high.pixels[0..4], [200, 30, 40, 255], "真图标必须覆盖通用图标");
+        assert_eq!(read_tier(&tier_path(&icons, &AppId::new("att").unwrap())), Some(IconTier::Window));
+    }
+
+    /// 已经是窗口档位：再有 pid 也不重复抓（避免每次打开列表都跑 Shell API）。
+    #[test]
+    fn window_tier_cache_is_not_refetched_even_with_pid() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let source = TierSource::new(IconTier::Window, [1, 2, 3, 255]);
+        let t = target("demo", Some(77));
+
+        resolve_and_cache(&source, &icons, &t).expect("首次应抓到");
+        assert_eq!(source.calls(), 1);
+
+        resolve_and_cache(&source, &icons, &t).expect("二次应命中");
+        resolve_and_cache(&source, &icons, &t).expect("三次应命中");
+        assert_eq!(source.calls(), 1, "窗口档位已缓存时不应重复抓取");
+    }
+
+    /// 没有 pid 时，已有的 exe 档位缓存直接复用（没有窗口可问，不可能升级）。
+    #[test]
+    fn exe_tier_cache_is_reused_when_no_window_can_exist() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let source = TierSource::new(IconTier::Exe, [5, 5, 5, 255]);
+        let t = target("pyapp", None);
+
+        resolve_and_cache(&source, &icons, &t).expect("首次应抓到");
+        resolve_and_cache(&source, &icons, &t).expect("二次应命中");
+        assert_eq!(source.calls(), 1);
+    }
+
+    /// 只升不降：窗口档位已经入库后，即使这次只拿到 exe 档位也不能降级覆盖。
+    #[test]
+    fn lower_tier_never_overwrites_higher_tier() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let app = AppId::new("keep").expect("合法 id");
+
+        let good = TierSource::new(IconTier::Window, [9, 9, 9, 255]);
+        let path = resolve_and_cache(&good, &icons, &target("keep", Some(1))).expect("应抓到");
+
+        // 这次窗口没取到（比如窗口刚好在重建），只能拿到 exe 档位
+        let worse = TierSource::new(IconTier::Exe, [0, 0, 0, 255]);
+        resolve_and_cache(&worse, &icons, &target("keep", Some(1))).expect("应返回已有缓存");
+
+        let kept = load_png_file(&path).expect("读缓存");
+        assert_eq!(kept.pixels[0..4], [9, 9, 9, 255], "好图不应被差图覆盖");
+        assert_eq!(read_tier(&tier_path(&icons, &app)), Some(IconTier::Window));
+    }
+
+    /// 老缓存没有 sidecar：视为「未知档位」，一旦有窗口可查就允许升级。
+    /// 这条保证升级后不需要用户手动删缓存。
+    #[test]
+    fn legacy_cache_without_sidecar_can_be_upgraded() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let app = AppId::new("legacy").expect("合法 id");
+
+        // 手工造一张旧版本写下的缓存（没有 .tier 文件）
+        std::fs::create_dir_all(&icons).expect("建目录");
+        let stale = RgbaImage::solid(8, 8, [3, 3, 3, 255]).expect("构造失败");
+        write_cache(&cache_path(&icons, &app), &stale).expect("写旧缓存");
+        assert_eq!(read_tier(&tier_path(&icons, &app)), None, "旧缓存没有档位信息");
+
+        let better = TierSource::new(IconTier::Window, [250, 250, 0, 255]);
+        let path = resolve_and_cache(&better, &icons, &target("legacy", Some(9))).expect("应升级");
+        assert_eq!(better.calls(), 1, "未知档位必须重抓一次");
+        let now = load_png_file(&path).expect("读缓存");
+        assert_eq!(now.pixels[0..4], [250, 250, 0, 255]);
+    }
+
+    /// forced 版本：即使缓存已经是窗口档位，也照抓不误（用于启动瞬间）。
+    #[test]
+    fn forced_recapture_ignores_cache_entirely() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let first = TierSource::new(IconTier::Window, [1, 1, 1, 255]);
+        let t = target("force", Some(3));
+
+        resolve_and_cache(&first, &icons, &t).expect("首次应抓到");
+        assert_eq!(first.calls(), 1);
+
+        let second = TierSource::new(IconTier::Window, [2, 2, 2, 255]);
+        let path = resolve_and_cache_forced(&second, &icons, &t).expect("强制应重抓");
+        assert_eq!(second.calls(), 1, "forced 必须真的重抓");
+        assert_eq!(load_png_file(&path).expect("读缓存").pixels[0..4], [2, 2, 2, 255]);
+    }
+
+    /// forced 版本仍然不许降级：用户自定义的图标不能被 exe 档位覆盖。
+    #[test]
+    fn forced_recapture_does_not_downgrade_custom_icon() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let app = AppId::new("custom").expect("合法 id");
+
+        let custom = TierSource::new(IconTier::Custom, [7, 7, 7, 255]);
+        let path = resolve_and_cache(&custom, &icons, &target("custom", None)).expect("应抓到");
+
+        let bad = TierSource::new(IconTier::Exe, [0, 0, 0, 255]);
+        resolve_and_cache_forced(&bad, &icons, &target("custom", Some(5))).expect("应返回旧图");
+        assert_eq!(load_png_file(&path).expect("读缓存").pixels[0..4], [7, 7, 7, 255]);
+        assert_eq!(read_tier(&tier_path(&icons, &app)), Some(IconTier::Custom));
+    }
+
+    /// 旧版本留下的 `.cmd` 通用图标缓存（无档位 + 现在解析不出 exe）必须被丢弃，
+    /// 而不是继续当成有效图标返回。
+    ///
+    /// 这是用户现场的直接修复：三个 Electron 应用的缓存都是 64×64 齿轮图、
+    /// 没有 sidecar，而 `pnpm.cmd` 现在解析成 None。不清理的话它们会一直错下去。
+    #[test]
+    fn legacy_cache_from_script_source_is_discarded() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let app = AppId::new("legacy-script").expect("合法 id");
+        std::fs::create_dir_all(&icons).expect("建目录");
+
+        // 模拟旧缓存：有 png、没有 .tier
+        let bogus = RgbaImage::solid(64, 64, [1, 2, 3, 255]).expect("构造失败");
+        write_cache(&cache_path(&icons, &app), &bogus).expect("写旧缓存");
+
+        // 没有 pid、也没有 exe（因为 pnpm.cmd 被过滤掉了）：不可能抓到更好的
+        let empty = TierSource::new(IconTier::Window, [0, 0, 0, 255]);
+        let target = IconTarget::for_app(app.clone());
+
+        assert!(
+            resolve_and_cache(&empty, &icons, &target).is_none(),
+            "无档位且无 exe 的旧缓存应被丢弃"
+        );
+        assert!(!cache_path(&icons, &app).exists(), "缓存文件应被删除");
+        assert_eq!(empty.calls(), 0, "这个分支不应去问来源");
+    }
+
+    /// 反过来：有档位的正常缓存不受上面那条规则影响。
+    #[test]
+    fn tiered_cache_is_kept_even_without_executable() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let app = AppId::new("tiered").expect("合法 id");
+
+        let good = TierSource::new(IconTier::Exe, [4, 5, 6, 255]);
+        let t = target("tiered", None);
+        let path = resolve_and_cache(&good, &icons, &t).expect("应抓到");
+        assert_eq!(read_tier(&tier_path(&icons, &app)), Some(IconTier::Exe));
+
+        // 二次调用：有档位，正常复用
+        let again = resolve_and_cache(&good, &icons, &t).expect("应命中");
+        assert_eq!(again, path);
+        assert!(path.exists(), "有档位的缓存不应被删除");
+    }
+
+    /// 档位字符串是持久化契约：改了会让所有旧缓存失效。
+    #[test]
+    fn tier_tags_round_trip() {
+        for tier in [IconTier::Exe, IconTier::Window, IconTier::Custom] {
+            assert_eq!(IconTier::from_tag(tier.tag()), Some(tier));
+        }
+        assert_eq!(IconTier::from_tag("nonsense"), None);
+        assert_eq!(IconTier::from_tag(""), None);
+        assert!(IconTier::Custom > IconTier::Window);
+        assert!(IconTier::Window > IconTier::Exe);
     }
 }

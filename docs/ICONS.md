@@ -125,7 +125,7 @@ IconCapture::capture(&target) -> Option<PathBuf>
 | 不缓存失败 | 失败时不写文件，下次调用仍会重试（窗口可能这会儿才建出来） |
 | 前端静默降级 | `get_app_icon` 返回 `null` → 显示内置默认图；连默认图都取不到 → 首字块；**从不弹 toast** |
 
-内置默认图是 `crates/launcher-core/assets/default_icon.png`（256×256，3169 字节），
+内置默认图是 `crates/launcher-core/assets/default_icon.png`（256×256，12034 字节），
 通过 `include_bytes!` 编译进二进制——兜底图必须在**任何情况下**都能用，
 不能依赖磁盘可读，也不能依赖当前工作目录。
 
@@ -270,4 +270,183 @@ png = "0.18"
 | --- | --- | --- | --- |
 | `notepad.exe`（exe 资源） | `PrivateExtractIconsW(256)` | 256×256 | 61274 字节 |
 | PowerShell + WinForms 窗口 | `GetClassLongPtrW(GCLP_HICON)` | 32×32 | 约 1 KB |
-| 内置默认图 | 编译进二进制 | 256×256 | 3169 字节 |
+| 内置默认图 | 编译进二进制 | 256×256 | 12034 字节 |
+
+---
+
+# 附：图标抓取失效的根因分析（2026-10-25）
+
+## 现象
+
+三个 Electron 应用（ATT 实时语音助手 / LunaWrite 2 / Opennote 笔记）显示**完全相同**的
+「窗口+齿轮」灰白图标，而不是各自应用的真实图标。
+
+## 实证过程
+
+| 步骤 | 方法 | 结果 |
+| --- | --- | --- |
+| 1 | `md5sum ~/.app_catch/icons/*.png` | 三个文件 **md5 完全相同**（`05424636…`），均 64×64 / 1707 字节 |
+| 2 | PowerShell `Icon.ExtractAssociatedIcon(pnpm.cmd)` | 得到**同一张**「窗口+齿轮」图 |
+| 3 | 对运行中的 Electron 窗口发 `WM_GETICON ICON_BIG` | 取到 **512×512 金色「錄」字** —— 真图标存在且可访问 |
+
+## 根因（两处，叠加导致）
+
+### 原因 A：`resolve_executable` 返回的是 `.cmd` 批处理文件
+
+```text
+app.command = "pnpm.cmd"  →  resolve_executable()  →  C:\Users\...\npm\pnpm.cmd
+```
+
+`icon.rs` 的 `resolve_executable` 逻辑是「命令名 → 在 PATH 里找同名文件」，
+`pnpm.cmd` 带扩展名，于是直接命中那个 **332 字节的 cmd 脚本**。
+Windows 对 `.cmd`/`.bat` 没有图标资源，Shell 一律返回**通用批处理图标**——就是那个「窗口+齿轮」。
+
+对 Electron 开发态来说，真正的图标在**窗口**上（应用设置的 BrowserWindow 图标），
+而 `.cmd` 连 exe 都不是。这一档抓到的必然是错的。
+
+### 原因 B：抓完立刻写缓存，且此后永不重抓
+
+`resolve_and_cache()` 的顺序是「缓存命中 → 抓 → 写盘」，而 `cache_state()` 的
+失效条件只有一条：**源文件 mtime 晚于缓存**。
+
+问题在于：`pnpm.cmd` 的 mtime 是 **2026-08-13**，而缓存在 **2026-10-25 15:06** 写入。
+源文件永远比缓存旧 → 永远 `Ready` → **永远是这张错图**。
+
+时间线也印证了这一点：
+
+| 时间 | 事件 |
+| --- | --- |
+| 15:06:00.95 | 三个图标被写入（此时 ATT **还没启动**，15:06:11 才起） |
+| 15:06:11 | att 会话开始 |
+| 15:07:17 | opennote 会话开始 |
+
+也就是说：**第一次抓取发生在窗口出现之前**，抓到的是 `.cmd` 的通用图标；
+等窗口起来之后，缓存已经命中，`WM_GETICON` 那一档再也没机会执行。
+
+### 为什么「运行时刷新」没救回来
+
+前端 `App.tsx` 在启动后确实做了：
+
+```ts
+invalidateIcon(app.id);                                    // 清前端内存缓存
+window.setTimeout(() => setIconRefresh(v => v + 1), 1500); // 1.5s 后重取
+```
+
+但 `invalidateIcon` 只清**前端内存**缓存；命令层 `get_app_icon` 仍然先走
+`resolve_and_cache`，磁盘缓存命中就直接返回——**根本不会走到窗口档位**。
+
+于是链路变成：
+前端清缓存 → 重新 invoke → 后端磁盘缓存命中 → 返回同一张 `.cmd` 图标。
+
+## 附带因素（解释「为什么有时对、有时错」）
+
+窗口档位依赖 `collect_tree_pids(root_pid)` 枚举子孙进程。实测这条链路是通的
+（Electron 的窗口在 node → electron 子进程里，pid 树能覆盖到），
+但只要 **pid 树枚举失败**（例如 vite 热重启换掉进程、或 Job Object 返回不全），
+就会静默回落到 exe 档位 → `.cmd` 图标。
+
+## 修复方向
+
+| # | 改动点 | 说明 |
+| --- | --- | --- |
+| 1 | `resolve_executable` 过滤脚本类扩展名 | `.cmd/.bat/.ps1` 不是图标来源，应视为「没有 exe」→ 直接落到窗口档位或兜底图 |
+| 2 | 缓存记录「来源档位」 | 记下这张图是「窗口 / exe / 脚本 / 自定义」抓的，低档位结果可被窗口档位结果替换，反之不可 |
+| 3 | 窗口档位成功后允许覆盖旧缓存 | 若当前缓存来自 exe/脚本档位而本次窗口档位成功，则重写缓存 |
+| 4 | 前端 `iconRefresh` 支持 force | 让「启动后刷新」真的绕过磁盘缓存一次，而不是只看 mtime |
+
+## 注意：这属于后端改动
+
+上面的修复全部落在 `crates/launcher-core/src/platform/icon*.rs`（+ 命令层传参），
+属于 **Rust 侧逻辑**。按本次任务「不改后端逻辑」的约束，这里只给出定位与方案，未直接改动。
+前端 `iconModel` 的缓存语义本身是正确的，不需要改。
+
+---
+
+# 附：图标抓取失效的修复（2026-10-25 落地）
+
+上一节记录了根因；本节记录**已落地的修复**与实测结果。
+
+## 改动清单
+
+| # | 文件 | 改动 |
+| --- | --- | --- |
+| 1 | `crates/launcher-core/src/platform/icon.rs` | 新增 `is_script()` + `SCRIPT_EXTENSIONS`；`resolve_executable` 在三条出口上统一过滤脚本 |
+| 2 | 同上 | 新增 `IconTier`（`Exe < Window < Custom`）与 `CapturedIcon`；`IconSource::produce` 返回档位 |
+| 3 | 同上 | 缓存旁新增 sidecar `<app_id>.tier`（`tier_path` / `read_tier` / `write_tier`） |
+| 4 | 同上 | `resolve_and_cache` 改为「档位 + 有无 pid」判定，**只升不降**；旧版无档位缓存可被升级 |
+| 5 | 同上 | 新增 `resolve_and_cache_forced`：忽略缓存强制重抓（仍禁止降级） |
+| 6 | 同上 | 无档位 + 无 exe（脚本来源）的旧缓存**自动删除**，回落到内置默认图 |
+| 7 | `crates/launcher-core/src/platform/mod.rs` | `IconCapture` 新增 `recapture()`（默认退化为 `capture`） |
+| 8 | `crates/launcher-core/src/platform/icon_windows.rs` | `produce` 返回档位；exe 档位跳过脚本；实现 `recapture` |
+| 9 | `src-tauri/src/commands.rs` | `get_app_icon` 新增可选参数 `force`（默认 `false`，行为向后兼容） |
+| 10 | `src/lib/api.ts` | `getAppIcon(appId, force = false)` |
+| 11 | `src/lib/iconModel.ts` | `loadIcon(appId, force = false)`：force 同时穿透内存缓存 |
+| 12 | `src/components/AppIcon.tsx` | 新增 `forceRefresh`；仅在 `refreshKey` **真的递增**那次强制穿透 |
+| 13 | `src/App.tsx` · `AppList` · `AppDetail` | 会话启动后的刷新带上 `force`，其余刷新不带 |
+
+## 关键设计：为什么是「档位 + 只升不降」
+
+原来的缓存键是「文件在不在 + 源文件 mtime」。这个键**没有表达可信度**，于是：
+
+```text
+应用未运行 -> 抓到 .cmd 通用图标（Exe 档）-> 写缓存
+应用运行了 -> 缓存命中 -> 直接返回错图（永不升级）
+```
+
+现在的键是「**档位 + 有没有窗口可查**」：
+
+| 已有缓存档位 | 有 pid（能查窗口） | 行为 |
+| --- | --- | --- |
+| `Window` / `Custom` | 任意 | 直接复用，不再抓 |
+| `Exe` / 未知 | 否 | 复用；若同时解析不出 exe（脚本来源）则**删除**并回落默认图 |
+| `Exe` / 未知 | 是 | 重抓一次，抓到更高档位才覆盖 |
+
+「只升不降」保证窗口偶尔取不到时，真图标不会被解释器图标顶掉。
+
+## 实测结果（用户真实环境）
+
+你的 `~/.app_catch/apps/` 里三个应用都是 `command = 'pnpm.cmd'`：
+
+```text
+修复前：resolve_executable("pnpm.cmd") -> C:\Users\...\npm\pnpm.cmd
+        -> 三个应用都拿到同一张 64×64 「窗口+齿轮」通用批处理图标
+
+修复后：resolve_executable("pnpm.cmd") -> None（脚本不是图标来源）
+        -> 应用运行中时走窗口档位，拿到 256×256 真图标
+```
+
+| 应用 | 修复前 | 修复后 |
+| --- | --- | --- |
+| ATT 实时语音助手（运行中） | 64×64 齿轮 | **256×256 金色「錄」字，档位 `Window`** |
+| LunaWrite 2（未运行） | 64×64 齿轮 | 错图被清理 → 内置默认图（启动后会拿到真图标） |
+| Opennote 笔记（未运行） | 64×64 齿轮 | 同上 |
+
+curl 之外的真实校验：
+
+```text
+$ ls ~/.app_catch/icons/
+att.png   att.tier        # att.tier 内容: window
+```
+
+## 用户需要做什么
+
+**什么都不用做。** 旧缓存会被自动识别并处理：
+
+- 应用运行中 → 下一次 `get_app_icon` 直接把真图标换进去；
+- 应用未运行 → 错图被删除，先显示内置默认图，等启动后自动换成真图标。
+
+如果想立刻看到效果：重启 app_catch（让新二进制生效），然后把对应应用启动一次。
+
+## 测试覆盖
+
+新增 12 条 Rust 用例与 2 条前端用例，覆盖：
+
+- 脚本扩展名识别、存在的 `.cmd` 解析为 `None`、PATH 命中脚本也返回 `None`
+- 低档位缓存被窗口档位覆盖（复现原 bug 的时序）
+- 窗口档位已缓存时不重复抓取（性能不回退）
+- 无 pid 时 exe 档位缓存直接复用
+- 只升不降：窗口图标不被 exe 档位覆盖
+- 旧版无 sidecar 缓存可升级
+- `forced` 强制重抓，且不会把 `Custom` 降级
+- 档位字符串往返（持久化契约）
+- 脚本来源的旧缓存被丢弃；有档位的正常缓存不受影响
