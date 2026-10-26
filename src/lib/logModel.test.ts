@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   advanceCursor,
   appendRows,
+  classifyOutputLevel,
   describeExit,
   describeStatus,
   eventToRows,
@@ -18,6 +19,7 @@ import {
   initialOf,
   INITIAL_CURSOR,
   isSessionGone,
+  looksLikeError,
   MAX_LOG_ROWS,
   pollInterval,
   POLL_FAST_MS,
@@ -164,19 +166,84 @@ describe("lossy 编码标记", () => {
     expect(eventToRows(legacy, 0)[0]!.lossy).toBe(false);
   });
 
-  it("stderr 行标红（level=error）但不算编码损坏", () => {
+  it("普通 stderr 标为 warn（不再一律吃红色），但不算编码损坏", () => {
     const event: SessionEvent = {
       event: "output",
       v: 1,
       ts: "t",
       stream: "stderr",
-      line: "错误输出",
+      line: '$ concurrently -k "vite --strictPort" "wait-on http://127.0.0.1:8090"',
     };
     const row = eventToRows(event, 0)[0]!;
-    expect(row.level).toBe("error");
+    expect(row.level).toBe("warn");
     expect(row.lossy).toBe(false);
   });
+
+  it("stderr 里的真实错误标为 error", () => {
+    const event: SessionEvent = {
+      event: "output",
+      v: 1,
+      ts: "t",
+      stream: "stderr",
+      line: "Error: Cannot find module 'vite'",
+    };
+    expect(eventToRows(event, 0)[0]!.level).toBe("error");
+  });
+
+  it("stdout 里的错误也标为 error（不只看流）", () => {
+    const event: SessionEvent = {
+      event: "output",
+      v: 1,
+      ts: "t",
+      stream: "stdout",
+      line: "thread 'main' panicked at src/main.rs:12",
+    };
+    expect(eventToRows(event, 0)[0]!.level).toBe("error");
+  });
+
+  it("常规 stdout 保持 normal", () => {
+    const event: SessionEvent = {
+      event: "output",
+      v: 1,
+      ts: "t",
+      stream: "stdout",
+      line: "Already up to date",
+    };
+    expect(eventToRows(event, 0)[0]!.level).toBe("normal");
+  });
 });
+
+describe("classifyOutputLevel 的边界", () => {
+  it("lossy 优先于一切：即使命中错误特征也标 warn（编码损坏单独表达）", () => {
+    expect(classifyOutputLevel("Error: 乱码", "stderr", true)).toBe("warn");
+  });
+
+  it("未定义 stream 时按 stdout 处理", () => {
+    expect(classifyOutputLevel("hello", undefined, false)).toBe("normal");
+  });
+
+  it.each([
+    ["panic", "thread panicked at ..."],
+    ["uncaught", "Uncaught TypeError: x is not a function"],
+    ["EADDRINUSE", "listen EADDRINUSE: address already in use :::5173"],
+    ["ERR!", "ERR! code ELIFECYCLE"],
+    ["cannot find", "Cannot find module 'electron'"],
+    ["fatal", "fatal: not a git repository"],
+  ])("命中错误特征 %s", (_label, line) => {
+    expect(looksLikeError(line)).toBe(true);
+  });
+
+  it.each([
+    ["脚本回显", '$ concurrently -k "vite"'],
+    ["升级提示", "Already up to date"],
+    ["完成提示", "Done in 443ms using pnpm v11.21.0"],
+    ["弃用警告", "(node:1) [DEP0060] DeprecationWarning: The `util._extend` API is deprecated."],
+    ["中文常规输出", "同步忽略规则已生成：electron/ignore-rules.cjs"],
+  ])("不把常规输出 %s 误判为错误", (_label, line) => {
+    expect(looksLikeError(line)).toBe(false);
+  });
+});
+
 
 describe("overflow 与状态/退出事件的渲染形态", () => {
   it("overflow 渲染成 notice，文案带丢弃行数", () => {

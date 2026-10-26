@@ -108,6 +108,65 @@ export function advanceCursor(
 }
 
 /** 把一条原始事件转换成若干日志行。 */
+/**
+ * 判断一条输出行的严重程度。
+ *
+ * 为什么不能「stderr 就是 error」：这是 M5 验收时暴露的真实问题。
+ * pnpm 回显待执行脚本、concurrently 打印 `$ ...` 命令行、vite 打提示、
+ * Node 打 DeprecationWarning——**全都走 stderr**。一刀切成红色会让
+ * 满屏假警报，用户很快学会无视红色，真正的问题反而被淹没。
+ *
+ * 规则改成「看内容」：
+ * - 有损解码（lossy）→ warn（编码损坏必须可见，但不是程序报错）
+ * - 行内命中真实错误特征 → error
+ * - 其余 stderr → warn（保持提示性，但不再吃刺眼的红）
+ * - stdout → normal
+ *
+ * 措辞刻意保守：只匹配明确的失败信号，不做词干模糊匹配。
+ * 宁可漏标一行，也不能把常规输出染红——前者用户会自己看，后者会毁掉整个颜色语义。
+ */
+export function classifyOutputLevel(
+  line: string,
+  stream: StreamKind | undefined,
+  lossy: boolean
+): LogRow["level"] {
+  if (lossy) {
+    return "warn";
+  }
+  // 先看内容再看流：panic 之类也会从 stdout 出来，只看流会漏掉
+  if (looksLikeError(line)) {
+    return "error";
+  }
+  return stream === "stderr" ? "warn" : "normal";
+}
+
+/**
+ * 这行文本是否像一条真正的错误。
+ *
+ * 覆盖各生态最常见的失败措辞：Node/Rust/Python 的 panic 与 Error，
+ * pnpm/npm 的 ERR! 前缀，构建工具的 "failed to"，以及带错误码的行。
+ * 注意区分：`0 errors` / `error-free` 这类「否定式」不算错误，
+ * 但为避免正则过度复杂，这里只做正向匹配——
+ * 误判成 warn 的代价远小于把正常输出标红。
+ */
+export function looksLikeError(line: string): boolean {
+  return ERROR_PATTERNS.some((pattern) => pattern.test(line));
+}
+
+/** 真实错误的特征串。顺序无关，任一命中即为错误。 */
+const ERROR_PATTERNS: readonly RegExp[] = [
+  /\bpanic(?:ked|s|king)?\b/i,
+  /\b(?:uncaught|unhandled)\b/i,
+  /\bexception\b/i,
+  /\berror\b/i,
+  /\bfailed\b/i,
+  /\bfatal\b/i,
+  /\bcannot\s+(?:find|resolve|open|read|write|load)\b/i,
+  /\bE(?:NOENT|ACCES|PERM|CONNREFUSED|ADDRINUSE)\b/,
+  /\bERR!/,
+  /^\s*error:/i,
+];
+
 export function eventToRows(event: SessionEvent, lineNo: number): LogRow[] {
   switch (event.event) {
     case "output": {
@@ -120,7 +179,7 @@ export function eventToRows(event: SessionEvent, lineNo: number): LogRow[] {
           stream: event.stream,
           text: event.line,
           lossy,
-          level: lossy ? "warn" : event.stream === "stderr" ? "error" : "normal",
+          level: classifyOutputLevel(event.line, event.stream, lossy),
         },
       ];
     }
