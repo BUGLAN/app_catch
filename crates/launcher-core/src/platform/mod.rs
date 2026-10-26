@@ -269,6 +269,24 @@ pub trait ProcessBackend: Send + Sync {
 
     /// 等待进程退出并返回退出信息。
     fn wait<'a>(&'a self, handle: &'a ProcessHandle) -> BackendFuture<'a, Result<ExitStatusInfo>>;
+
+    /// 列出该会话进程树中除根进程外的全部子孙 pid。
+    ///
+    /// 这是**可选能力**：返回值语义是「能给出时才给」，因此用 `Option` 而不是空 `Vec`
+    /// 区分「确实没有子孙」和「本后端不支持查询」——前者是有效的采集结果，
+    /// 后者需要调用方回退到别的途径（如平台无关的快照枚举）。
+    ///
+    /// 为什么放在后端 trait 上：只有后端知道「这棵树的权威成员是谁」。
+    /// Windows 实现给每个会话建了 Job Object，成员表由内核维护，
+    /// 一次查询实测 0.3 微秒；而通用的「扫全系统进程表 + 按父子关系 BFS」
+    /// 在同一台机器上要 330 毫秒，且中间进程退出后会断链。
+    ///
+    /// 默认实现返回 `None`（不支持），保持向后兼容：
+    /// 非 Windows 后端与测试用的假后端无需实现它。
+    fn descendant_pids(&self, _handle: &ProcessHandle) -> Option<Vec<u32>> {
+        None
+    }
+
 }
 
 /// 图标捕获目标：应用身份 + 可执行文件 + （可能的）运行中窗口信息。

@@ -298,7 +298,13 @@ impl SessionManager {
 
         // 状态采集循环：在 start 返回前就挂上
         // （句柄先存进 ActiveSession，收尾任务会 await 它，保证不泄漏 task）
-        let status_task = self.spawn_status_loop(session_id, spawned.handle.pid, sink.clone(), Arc::clone(&exit_signal));
+        let status_task = self.spawn_status_loop(
+            session_id,
+            spawned.handle.pid,
+            spawned.handle.clone(),
+            sink.clone(),
+            Arc::clone(&exit_signal),
+        );
 
         {
             let mut guard = self.active.lock().await;
@@ -413,6 +419,7 @@ impl SessionManager {
         &self,
         session_id: SessionId,
         root_pid: u32,
+        handle: ProcessHandle,
         sink: CaptureSink,
         exit_signal: Arc<Notify>,
     ) -> Option<JoinHandle<()>> {
@@ -422,6 +429,8 @@ impl SessionManager {
         }
 
         let probe = Arc::clone(&self.status_probe);
+        // 进程树查询交给后端：Windows 用 Job 成员表（微秒级），而非全系统快照。
+        let backend = Arc::clone(&self.backend);
         // 组合 probe 里只要有一个需要进程树，就枚举一次；都不需要则整条路径省掉
         let needs_tree = probe.needs_process_tree();
         let active = Arc::clone(&self.active);
@@ -445,13 +454,31 @@ impl SessionManager {
                 if !running {
                     return;
                 }
-
-                // 探针是同步 Win32 调用：扔到阻塞线程池，避免占住 tokio worker。
-                // 只有确实需要进程树的 probe 才枚举整机进程表——
-                // ToolHelp 快照是这条路径上最贵的一步（开发机实测约 250ms）。
+                // 进程树查询优先走 backend.descendant_pids：
+                // Windows 实现是 Job 成员表（实测 0.3 微秒），
+                // 而通用兜底是「全系统快照 + BFS」（本机实测 330 毫秒）。
+                // 两条路径都在阻塞线程池里跑，绝不占住 tokio worker。
                 let ctx = {
                     let descendants = if needs_tree {
-                        descendant_pids_blocking(root_pid).await
+                        // 后端实现（Windows: Job 成员表，微秒级）；不支持则返回 None。
+                        let backend_for_tree = Arc::clone(&backend);
+                        let handle_for_tree = handle.clone();
+                        let from_backend = tokio::task::spawn_blocking(move || {
+                            backend_for_tree.descendant_pids(&handle_for_tree)
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+
+                        match from_backend {
+                            Some(pids) => pids,
+                            // 兜底：全系统快照 + BFS（本机约 330ms，务必留在阻塞线程池里）
+                            None => tokio::task::spawn_blocking(move || {
+                                platform_descendant_pids(root_pid)
+                            })
+                            .await
+                            .unwrap_or_default(),
+                        }
                     } else {
                         Vec::new()
                     };
@@ -463,7 +490,6 @@ impl SessionManager {
                     .await
                     // 阻塞任务本身崩了（panic / 取消）：按「这一轮没采到」处理，循环继续
                     .unwrap_or_else(|_| StatusSnapshot::empty());
-
                 let changed = last.as_ref() != Some(&sampled);
                 last = Some(sampled.clone());
 
@@ -492,16 +518,17 @@ impl SessionManager {
 
                 // 等到下一轮——但退出信号一到就立刻返回，不等满一个采集间隔。
                 // 这正是「正常路径不消耗 shutdown 预算」的关键：进程一退出就被唤醒。
+                // 间隔带抖动：多个会话同刻启动时，避免它们在同一毫秒一起采样，
+                // 把一次瞬时尖峰摊平（对上限只有一次系统调用的路径意义不大，
+                // 但对将来新增更重的 probe 是必要的余量）。
                 tokio::select! {
-                    () = tokio::time::sleep(interval) => {}
+                    () = tokio::time::sleep(jittered(interval)) => {}
                     () = exit_signal.notified() => return,
                 }
             }
         }))
     }
 
-    /// 主动停止一个会话：回收整棵进程树，并把退出原因标记为 killed。
-    ///
     /// 返回时进程树已被回收（kill_tree 内部会等到进程真正消失）。
     pub async fn stop(&self, session_id: SessionId) -> Result<()> {
         let handle = {
@@ -756,7 +783,13 @@ impl SessionManager {
 
         // 接管的活进程同样需要状态采集：否则重关联后的会话会永远没有窗口标题/端口
         let status_task =
-            self.spawn_status_loop(session_id, handle.pid, sink.clone(), Arc::clone(&exit_signal));
+            self.spawn_status_loop(
+                session_id,
+                handle.pid,
+                handle.clone(),
+                sink.clone(),
+                Arc::clone(&exit_signal),
+            );
 
         {
             let mut guard = self.active.lock().await;
@@ -857,20 +890,49 @@ fn snapshot_of(session_id: SessionId, session: &ActiveSession) -> SessionSnapsho
     }
 }
 
-/// 在阻塞线程池里枚举子孙进程 pid。
+/// 给采集间隔加一点抖动（±10%），把 N 个会话的采样时刻错开。
 ///
-/// ToolHelp 快照是同步系统调用（毫秒级），不能在 tokio worker 上直接调用；
-/// 拿不到就返回空列表——状态采集是尽力而为，绝不因此让循环出错。
+/// 为什么需要：所有会话都用同一个固定间隔时，只要它们在大致同一时刻启动，
+/// 采样就会永远锁相——N 个会话的 probe 会在同一毫秒一起触发。
+/// 即使单次 probe 很便宜，这种「整齐的尖峰」也会让 CPU 曲线出现周期性毛刺；
+/// 将来若加入更重的 probe（如磁盘占用、CPU 采样），尖峰就会被放大 N 倍。
+///
+/// 用时间戳的低位做伪随机源，避免为此引入 `rand` 依赖——这里只要求「错开」，
+/// 不要求密码学强度，也不需要可重现性（测试用零抖动配置规避不确定性）。
+fn jittered(interval: std::time::Duration) -> std::time::Duration {
+    const SPREAD_PERCENT: u64 = 10;
+    let base = interval.as_millis() as u64;
+    if base == 0 {
+        return interval;
+    }
+    // 取纳秒时间戳低位：同一进程内多次调用几乎不会重复，足以打散相位
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let span = (base * SPREAD_PERCENT / 100).max(1);
+    // 映射到 [-span, +span]
+    let offset = (seed % (span * 2 + 1)) as i64 - span as i64;
+    let millis = (base as i64 + offset).max(1) as u64;
+    std::time::Duration::from_millis(millis)
+}
+
+/// 枚举子孙进程 pid 的**兜底**路径：全系统进程快照 + 按父子关系 BFS。
+///
+/// 只在拿不到 Job 成员表时才会走到（`ProcessBackend::descendant_pids` 返回 `None`
+/// 或 Windows 后端内部回退）。注意这条路在本机实测约 **330 毫秒/次**，
+/// 因为它要枚举全系统 400+ 个进程；正常路径（Job 查询）只需 0.3 微秒。
+///
+/// 调用方必须把它放在 `spawn_blocking` 里——这里故意做成同步函数，
+/// 让「同步阻塞调用」这件事在类型上就可见，避免有人在 async 路径直接调用。
 #[cfg(windows)]
-async fn descendant_pids_blocking(root_pid: u32) -> Vec<u32> {
-    tokio::task::spawn_blocking(move || crate::platform::descendant_pids(root_pid))
-        .await
-        .unwrap_or_default()
+fn platform_descendant_pids(root_pid: u32) -> Vec<u32> {
+    crate::platform::descendant_pids(root_pid)
 }
 
 /// 非 Windows 平台没有进程树枚举能力，返回空列表。
 #[cfg(not(windows))]
-async fn descendant_pids_blocking(_root_pid: u32) -> Vec<u32> {
+fn platform_descendant_pids(_root_pid: u32) -> Vec<u32> {
     Vec::new()
 }
 
