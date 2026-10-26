@@ -43,21 +43,26 @@ export function loadDefaultIcon(): Promise<string> {
 /**
  * 取某个应用的图标 data URL（已带会话内缓存）。
  *
+ * `force` 为真时同时绕过内存缓存与命令层的磁盘缓存，重新抓一次。
+ *
  * 返回 \`null\` 表示「这个应用没有图标」，调用方应显示默认图。
  * 请求失败同样返回 \`null\`——错误对用户没有意义，静默降级。
  */
-export function loadIcon(appId: string): Promise<IconState> {
-  const cached = resolved.get(appId);
-  if (cached !== undefined) {
-    return Promise.resolve(cached);
+export function loadIcon(appId: string, force = false): Promise<IconState> {
+  // force = 「这次别信内存缓存」：用于会话刚启动、窗口才出现的那一刻
+  if (!force) {
+    const cached = resolved.get(appId);
+    if (cached !== undefined) {
+      return Promise.resolve(cached);
+    }
   }
   const inFlight = pending.get(appId);
-  if (inFlight) {
+  if (inFlight && !force) {
     return inFlight;
   }
 
   const request = api
-    .getAppIcon(appId)
+    .getAppIcon(appId, force)
     .then((url) => {
       const value: IconState = url && url.length > 0 ? url : null;
       resolved.set(appId, value);

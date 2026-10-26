@@ -1,0 +1,704 @@
+/* =============================================================================
+ * chrome.css — 应用外壳：自绘标题栏 + 窗口控制 + 左侧抽屉（rail）
+ *
+ * 跨平台差异全部由 [data-platform] 承担（见 src/lib/platform.ts）：
+ *   - macos   ：标题栏左侧留出 --titlebar-mac-inset 的红黄绿安全区，不渲染自绘按钮
+ *   - windows ：右上角自绘 最小化 / 最大化 / 关闭
+ *   - linux   ：同 windows（无边框，自绘按钮）
+ *
+ * 拖拽：
+ *   Tauri 的 window 插件会读 data-tauri-drag-region（"deep" = 子树任意位置都能拖），
+ *   并自动实现「双击标题栏 = 最大化 / 还原」。因此这里**不再**额外绑 onDoubleClick：
+ *   两套逻辑同时存在会互相抵消（切两次 = 没切）。
+ *   -webkit-app-region 是同一语义的 Electron 兼容写法，在 Tauri 里不生效也不冲突。
+ * ========================================================================== */
+
+/* ---------- 标题栏 ---------- */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  height: var(--titlebar-height);
+  padding-left: var(--space-3);
+  background: var(--surface-glass);
+  border-bottom: 1px solid var(--border-subtle);
+  backdrop-filter: blur(18px) saturate(140%);
+  z-index: var(--z-titlebar);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+/*
+ * macOS：红黄绿由系统画在左上角，这里让出 80px 安全区。
+ * 用 padding 而不是 margin：安全区本身仍属于拖拽区，
+ * 压在红黄绿旁边拖动窗口的行为与原生一致。
+ */
+[data-platform="macos"] .titlebar {
+  padding-left: var(--titlebar-mac-inset);
+}
+
+/* 中间留白：品牌与右侧操作之间的可拖拽缓冲 */
+.titlebar-drag {
+  flex: 1;
+  min-width: var(--space-2);
+  height: 100%;
+}
+
+.titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+
+/*
+ * 品牌徽标容器：只负责尺寸与对齐，图形本身由 <BrandMark> 画。
+ *
+ * 这里刻意不加背景/边框——徽标自带圆角方块底，再套一层会变成"框中框"。
+ * 颜色也不在这里定：BrandMark 自己用 --accent / --text-on-accent，
+ * 这样标题栏徽标和任务栏应用图标永远是同一个色的同一个图形。
+ */
+.titlebar-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  line-height: 0;
+}
+
+.titlebar-mark svg {
+  display: block;
+}
+
+.titlebar-wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.titlebar-name {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.titlebar-sub {
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 标题栏内的全局搜索 ---------- */
+
+.titlebar-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 320px;
+  min-width: 132px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-search-icon {
+  position: absolute;
+  left: var(--space-2);
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.titlebar-search-input {
+  width: 100%;
+  height: 26px;
+  padding: 0 var(--space-8) 0 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  line-height: 1;
+  transition: border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.titlebar-search-input::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+/*
+ * type="search" 在 Chromium 里自带一个原生清除按钮，
+ * 会和自定义的清空按钮并排成"× ×"。这里去掉原生装饰，
+ * 统一走 .titlebar-search-clear（它同时有 aria-label 与 title）。
+ */
+.titlebar-search-input::-webkit-search-cancel-button,
+.titlebar-search-input::-webkit-search-decoration {
+  appearance: none;
+  display: none;
+}
+
+.titlebar-search-input:hover:not(:focus) {
+  border-color: var(--border);
+}
+
+.titlebar-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface-raised);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.titlebar-search-clear {
+  position: absolute;
+  right: var(--space-1);
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  transition: background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.titlebar-search-clear:hover {
+  background: var(--surface-active);
+  color: var(--text-primary);
+}
+
+/** 搜索结果计数：输入时显示命中数，让"过滤生效"立刻可见 */
+.titlebar-search-count {
+  position: absolute;
+  /* 清空按钮宽 20 + 右侧留白 4：计数紧贴它左边 */
+  right: calc(var(--space-1) + 20px + var(--space-1));
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* ---------- 标题栏右侧：业务操作 + 窗口控制 ---------- */
+
+.titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-divider {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--space-1);
+  background: var(--border);
+}
+
+.titlebar-button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.titlebar-button:hover:not(:disabled) {
+  background: var(--surface-active);
+  color: var(--text-primary);
+}
+
+.titlebar-button:active:not(:disabled) {
+  background: var(--surface-selected);
+}
+
+.titlebar-button:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+/* 禁用态（窗口太窄、侧栏已强制成图标）：仍在原位但不可点 */
+.rail-toggle:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+/* 主题切换：三态里当前项高亮 */
+.titlebar-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* ---------- 窗口控制按钮 ---------- */
+
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  height: var(--titlebar-height);
+  margin-left: var(--space-1);
+  -webkit-app-region: no-drag;
+}
+
+/* macOS 用原生红黄绿：DOM 保留（快捷键/读屏一致），视觉隐藏 */
+[data-platform="macos"] .window-controls {
+  display: none;
+}
+
+.window-control {
+  display: grid;
+  place-items: center;
+  width: var(--window-control-width);
+  height: 100%;
+  border-radius: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  /*
+   * 显式声明 no-drag：Electron 语义下 app-region 不继承，
+   * 落在父级拖拽区里的子元素必须自己声明，否则点击会被当作"拖窗口"。
+   * （Tauri 侧另有自己的判断，这里是同一语义的第二道保险。）
+   */
+  -webkit-app-region: no-drag;
+  transition: background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.window-control:hover:not(:disabled) {
+  background: var(--window-control-hover);
+  color: var(--text-primary);
+}
+
+.window-control:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.window-control:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+/*
+ * 关闭按钮：Windows 约定 —— hover 变红底白叉。
+ * 图标必须同时换成白色：深色主题下 --text-secondary 在红底上对比度不够。
+ */
+.window-control-close:hover:not(:disabled),
+.window-control-close:focus-visible {
+  background: var(--window-close-hover);
+  color: var(--window-close-fg);
+}
+
+.window-control-close:active:not(:disabled) {
+  background: var(--window-close-hover);
+  color: var(--window-close-fg);
+  filter: brightness(0.92);
+}
+
+/* 关闭按钮贴着窗口右上角：右上角不需要圆角 */
+.window-control-close {
+  border-top-right-radius: var(--radius-sm);
+}
+
+/* ---------- 左侧抽屉（rail） ---------- */
+
+.sidebar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: var(--rail-current-width, var(--rail-expanded-width));
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-raised);
+  border-right: 1px solid var(--border-subtle);
+  z-index: var(--z-sidebar);
+  /* 折叠/展开：150–200ms ease；拖拽期间由 [data-resizing] 关掉 */
+  transition: width var(--duration-base) var(--ease-standard);
+}
+
+.sidebar[data-resizing="true"] {
+  transition: none;
+}
+
+.sidebar[data-collapsed="true"] {
+  width: var(--rail-collapsed-width);
+}
+
+/* 折叠态：只留图标 —— 文字、标签、徽标一律收起 */
+.sidebar[data-collapsed="true"] .rail-label,
+.sidebar[data-collapsed="true"] .rail-count,
+.sidebar[data-collapsed="true"] .rail-caption,
+.sidebar[data-collapsed="true"] .rail-action-label,
+.sidebar[data-collapsed="true"] .rail-action-value,
+.sidebar[data-collapsed="true"] .app-start,
+.sidebar[data-collapsed="true"] .app-item-meta,
+.sidebar[data-collapsed="true"] .app-item-name {
+  display: none;
+}
+
+/* ---------- 抽屉头部 ---------- */
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  height: 38px;
+  padding: 0 var(--space-2) 0 var(--space-3);
+}
+
+.sidebar[data-collapsed="true"] .rail-head {
+  justify-content: center;
+  padding: 0;
+}
+
+.rail-caption {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-cn);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.rail-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 17px;
+  padding: 0 var(--space-1-5);
+  border-radius: var(--radius-full);
+  background: var(--surface-overlay);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+}
+
+/* 折叠切换按钮：与抽屉同一个视觉节奏（图标 16，热区 28） */
+.rail-toggle {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.rail-toggle:hover {
+  background: var(--hover-tint);
+  color: var(--text-primary);
+}
+
+.rail-toggle:active {
+  background: var(--surface-active);
+}
+
+/* ---------- 抽屉滚动区 ---------- */
+
+.rail-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-1) var(--space-2) var(--space-3);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sidebar[data-collapsed="true"] .rail-scroll {
+  padding: var(--space-1) var(--space-1-5) var(--space-3);
+}
+
+/* ---------- 抽屉底部 ---------- */
+
+.rail-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  flex: none;
+  padding: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sidebar[data-collapsed="true"] .rail-foot {
+  align-items: center;
+  padding: var(--space-2) var(--space-1-5);
+}
+
+/*
+ * 底部按钮：与列表项同一套"图标 + 标签"栅格，
+ * 折叠时只剩图标 —— 顶部、中部、底部三个区的节奏因此完全一致。
+ */
+.rail-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  width: 100%;
+  min-height: var(--rail-item-size);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.rail-action:hover {
+  background: var(--hover-tint);
+  color: var(--text-primary);
+}
+
+.rail-action:active {
+  background: var(--surface-active);
+}
+
+.sidebar[data-collapsed="true"] .rail-action {
+  justify-content: center;
+  width: var(--rail-item-size);
+  padding: 0;
+}
+
+.rail-action-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: currentColor;
+}
+
+.rail-action-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-action-value {
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+/*
+ * 静态信息行（宿主状态）：不是按钮，所以不要 hover 反馈、不要手型光标。
+ * 与 .rail-action 共用栅格，视觉上属于同一组。
+ */
+.rail-action-static {
+  cursor: default;
+}
+
+.rail-action-static:hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+/* 宿主状态点：连上 Tauri 是绿点，浏览器预览是黄点 */
+.rail-host-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--success);
+}
+
+.rail-host-dot[data-hosted="false"] {
+  background: var(--warning);
+}
+
+/* ---------- 右边缘拖拽热区 ---------- */
+
+/*
+ * 4px 透明热区压在右边缘，并向两侧各溢出 2px（::before 再放大命中区）：
+ * 视觉上什么都不存在，鼠标却很好抓。
+ */
+.rail-handle {
+  position: absolute;
+  top: 0;
+  right: calc(var(--rail-handle-width) / -2);
+  bottom: 0;
+  z-index: var(--z-handle);
+  width: var(--rail-handle-width);
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.rail-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--space-1) * -1);
+  right: calc(var(--space-1) * -1);
+}
+
+/* 悬停 / 拖拽中显示一条强调色细线，明确"这里能拉" */
+.rail-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+
+.rail-handle:hover::after,
+.rail-handle:focus-visible::after,
+.rail-handle[data-resizing="true"]::after {
+  opacity: 0.9;
+}
+
+/* 拖拽期间锁住整页指针与选择：否则会选中侧栏文字、光标来回跳 */
+.shell[data-resizing="true"] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* ---------- 折叠态 Tooltip（portal 到 body，fixed 定位） ---------- */
+
+/*
+ * 气泡由 Tooltip 组件 portal 到 body：挂在 .rail-scroll（overflow: auto）里
+ * 会被裁掉右侧一半。fixed + 页面坐标（getBoundingClientRect）保证始终可见。
+ */
+.rail-tooltip {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  max-width: 260px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--tooltip-border);
+  border-radius: var(--radius-sm);
+  background: var(--tooltip-bg);
+  box-shadow: var(--shadow-pop);
+  color: var(--tooltip-fg);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  transform: translateY(-50%);
+  animation: tooltip-in var(--duration-fast) var(--ease-out);
+}
+
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+    transform: translate(var(--space-1), -50%);
+  }
+}
+
+.tooltip-trigger {
+  display: block;
+  width: 100%;
+}
+
+/* ---------- 响应式：窄窗口强制折叠 ---------- */
+
+/*
+ * 窗口窄到放不下"抽屉 + 可用主区"时忽略用户宽度，直接收成图标条。
+ * 这里用 900px 而不是 760：主区在 760 以上还要显示完整的会话表与键值表。
+ */
+@media (max-width: 900px) {
+  .sidebar {
+    width: var(--rail-collapsed-width);
+  }
+
+  .sidebar .rail-label,
+  .sidebar .rail-count,
+  .sidebar .rail-caption,
+  .sidebar .rail-action-label,
+  .sidebar .rail-action-value,
+  .sidebar .app-start,
+  .sidebar .app-item-meta,
+  .sidebar .app-item-name {
+    display: none;
+  }
+
+  .sidebar .rail-scroll {
+    padding: var(--space-1) var(--space-1-5) var(--space-3);
+  }
+
+  .sidebar .rail-foot {
+    align-items: center;
+    padding: var(--space-2) var(--space-1-5);
+  }
+
+  .sidebar .rail-action {
+    justify-content: center;
+    width: var(--rail-item-size);
+    padding: 0;
+  }
+
+  .sidebar .rail-head {
+    justify-content: center;
+    padding: 0;
+  }
+
+  /* 宽度由断点决定，不允许拖拽 */
+  .rail-handle {
+    display: none;
+  }
+}
+
+/* 窄窗口：隐藏标题栏副标题与搜索，把空间留给业务按钮 */
+@media (max-width: 760px) {
+  .titlebar-sub,
+  .titlebar-search {
+    display: none;
+  }
+}
+
+/* 极窄：连"新建应用"的文字也收起来，只留 + 号 */
+@media (max-width: 520px) {
+  .titlebar-new-label {
+    display: none;
+  }
+
+  .titlebar-new {
+    padding: 0 var(--space-2);
+  }
+}

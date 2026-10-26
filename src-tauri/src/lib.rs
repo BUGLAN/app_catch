@@ -9,12 +9,14 @@
 //! | [`dto`] | 命令层数据传输对象与输入校验 |
 //! | [`error`] | `launcher-core` 错误 -> 前端可读的 `{ kind, message }` |
 //! | [`events_reader`] | 会话事件分片合并 + 增量游标 + 边写边读 |
+//! | [`window`] | 自绘标题栏所需的窗口控制命令 + 最大化状态事件 |
 
 pub mod app_state;
 pub mod commands;
 pub mod dto;
 pub mod error;
 pub mod events_reader;
+pub mod window;
 
 use tauri::Manager;
 
@@ -32,6 +34,8 @@ pub fn run() {
             // 而不是带着半初始化状态继续跑——那样界面会全是莫名其妙的错误。
             let state = AppState::bootstrap()?;
             app.manage(state);
+            // 自定义标题栏依赖「最大化 / 还原」图标能跟着窗口状态变：挂上监听
+            window::attach_maximize_watcher(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -53,6 +57,12 @@ pub fn run() {
             commands::recover_sessions,
             commands::get_app_icon,
             commands::default_icon,
+            window::window_minimize,
+            window::window_maximize,
+            window::window_unmaximize,
+            window::window_toggle_maximize,
+            window::window_is_maximized,
+            window::window_close,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Tauri 应用失败");

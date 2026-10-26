@@ -4,6 +4,56 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>app_catch</title>
+    <!--
+      内联 SVG favicon：不额外产生请求，也不会在开发时刷一条 404。
+      图形与标题栏左上角的徽标同构（圆角方块 + 三条递减的横杠 = 日志行）。
+
+      为什么不用文字（原来是 "ac"）：favicon 常在 16px 渲染，
+      实时文本在那个尺寸会糊成一团灰块；三条横杠是纯几何形状，
+      缩到 16px 仍分得清（已用 16/32/64 实渲染对比验证）。
+    -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='1' y='1' width='30' height='30' rx='7.5' fill='%235b5ce0'/%3E%3Crect x='7.5' y='7.9' width='17' height='4.2' rx='2.1' fill='%23fff'/%3E%3Crect x='7.5' y='13.9' width='12.2' height='4.2' rx='2.1' fill='%23fff'/%3E%3Crect x='7.5' y='19.9' width='7.5' height='4.2' rx='2.1' fill='%23fff'/%3E%3C/svg%3E"
+    />
+    <script>
+      /*
+       * 首屏主题与平台：必须在样式表之前跑完，否则会先渲染一帧默认深色再跳成浅色。
+       * 这段逻辑与 src/hooks/useTheme.ts、src/lib/platform.ts 等价，故意重复一次：
+       * React 挂载前拿不到模块，而闪一下白/黑是能直接被用户看见的瑕疵。
+       */
+      (function () {
+        try {
+          var root = document.documentElement;
+          var ua = navigator.userAgent;
+          var platform = /Macintosh|Mac OS X|iPhone|iPad/i.test(ua)
+            ? "macos"
+            : /Linux|X11/i.test(ua) && !/Android/i.test(ua)
+              ? "linux"
+              : "windows";
+          root.dataset.platform = platform;
+
+          var mode = null;
+          try {
+            mode = window.localStorage.getItem("app_catch.theme");
+          } catch (e) {
+            /* 隐私模式：当作跟随系统 */
+          }
+          if (mode !== "light" && mode !== "dark" && mode !== "system") {
+            mode = "system";
+          }
+          var prefersDark =
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var theme = mode === "system" ? (prefersDark ? "dark" : "light") : mode;
+          root.dataset.theme = theme;
+          root.dataset.themeMode = mode;
+        } catch (e) {
+          /* 任何异常都退回默认深色，界面必须能起来 */
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

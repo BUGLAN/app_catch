@@ -1,0 +1,295 @@
+/* =============================================================================
+ * tokens.css — 设计 token（唯一允许出现"裸值"的地方）
+ *
+ * 分层：
+ *   1. 调色板（palette）—— 只描述颜色本身，不带语义
+ *   2. 语义 token（semantic）—— 组件只允许引用这一层；深/浅两套
+ *   3. 尺度 token —— 间距 / 圆角 / 字号 / 行高 / 阴影 / 动效 / 尺寸
+ *
+ * 主题：
+ *   `data-theme="dark"`（默认）/ `data-theme="light"` 由 `src/hooks/useTheme.ts` 写在
+ *   `<html>` 上，首屏由 index.html 的内联脚本提前定好，避免刷新时闪一下白。
+ *   `data-theme-mode="system"` 表示跟随系统（此时 data-theme 已是解析后的结果）。
+ *
+ * 跨平台：
+ *   `data-platform="windows|macos|linux"` 写在应用根节点上，用于区分标题栏布局：
+ *   macOS 需要给左上角红黄绿按钮留出 `--titlebar-mac-inset` 的安全区，
+ *   且不渲染自绘窗口按钮（见 src/styles/chrome.css）。
+ *
+ * 所有前景色都标注了对实际背景的 WCAG 对比度（AA 正文 4.5:1，大字与非文 3:1）。
+ * 改颜色前先跑 `.e2e/ui-audit/contrast-check.mjs` 复核。
+ * ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* ---------- 1. 调色板：中性色相（蓝灰偏冷，但饱和度压到最低） ---------- */
+  --ink-950: #05070c;
+  --ink-900: #070910;
+  --ink-850: #0b0e16;
+  --ink-800: #0f131c;
+  --ink-750: #131826;
+  --ink-700: #171d2b;
+  --ink-600: #212a3b;
+  --ink-500: #2f3a4f;
+
+  --haze-400: #6b7488;
+  --haze-300: #8b95a7;
+  --haze-200: #b3bccb;
+  --haze-100: #e9edf4;
+
+  /* 主色：靛蓝（不是通用"AI 蓝"），白字 5.18:1 */
+  --violet-600: #4a4bc4;
+  --violet-500: #5b5ce0;
+  --violet-400: #6b6ceb;
+  --violet-200: #a5a6ff;
+
+  --mint-400: #3ddc97;
+  --amber-400: #f2b34c;
+  --rose-500: #d93a3f;
+  --rose-400: #ff8080;
+
+  /* ---------- 2. 语义 token：表面层级（越靠前越"远"） ---------- */
+  --surface-base: var(--ink-900);        /* 应用画布 */
+  --surface-raised: var(--ink-850);      /* 标题栏 / 侧栏 */
+  --surface-panel: var(--ink-800);       /* 卡片 */
+  --surface-elevated: var(--ink-750);    /* 弹窗 / 浮层 */
+  --surface-overlay: #141a27;            /* hover / 表头 / 代码块 */
+  --surface-active: #1a2130;             /* 选中 / 按下 */
+  --surface-selected: #1c2436;           /* 明确的选中填充 */
+  --surface-inset: var(--ink-950);       /* 输入框 / 日志区（内凹） */
+  /* 半透明标题栏：毛玻璃底 */
+  --surface-glass: rgba(9, 12, 19, 0.72);
+  --backdrop: rgba(4, 6, 10, 0.66);
+  --hover-tint: rgba(255, 255, 255, 0.035);
+  --row-hover-tint: rgba(255, 255, 255, 0.03);
+  --skeleton-sheen: rgba(255, 255, 255, 0.05);
+  --selection-bg: rgba(140, 140, 255, 0.28);
+
+  /* ---------- 3. 语义 token：文字 ---------- */
+  --text-primary: var(--haze-100);       /* 15.4:1 on panel */
+  --text-secondary: var(--haze-200);     /*  9.0:1 on panel */
+  --text-muted: var(--haze-300);         /*  6.0:1 on panel / 6.4:1 on rail */
+  --text-disabled: #6a7486;              /* 禁用态：AA 有豁免，但仍要"看得出内容" */
+  --text-on-accent: #ffffff;             /*  5.2:1 on --accent */
+  --text-on-danger: #ffffff;
+
+  /* ---------- 4. 语义 token：描边 ---------- */
+  --border-subtle: #1a2030;              /* 行分隔、区块内部分隔（装饰性） */
+  --border: #232b3d;                     /* 卡片外框 */
+  --border-strong: #33405a;              /* 强分隔 */
+  --border-control: var(--haze-400);     /* 交互控件外框：≥3:1 */
+  --border-inverse: rgba(255, 255, 255, 0.08);
+  --border-glass: rgba(255, 255, 255, 0.06);
+
+  /* ---------- 5. 语义 token：强调 / 状态 ---------- */
+  --accent: var(--violet-500);           /* 白字 5.18:1，填充 vs 面板 3.59:1 */
+  --accent-hover: var(--violet-400);
+  --accent-active: var(--violet-600);
+  --accent-text: var(--violet-200);      /* 8.9:1 on panel：强调文字专用 */
+  --accent-soft: rgba(91, 92, 224, 0.16);
+  --accent-ring: rgba(140, 140, 255, 0.42);
+
+  --success: var(--mint-400);            /* 10.4:1 on panel */
+  --success-soft: rgba(61, 220, 151, 0.12);
+  --success-border: rgba(61, 220, 151, 0.32);
+
+  --warning: var(--amber-400);           /* 10.1:1 on panel */
+  --warning-text: #ffd8a0;
+  --warning-soft: rgba(242, 179, 76, 0.1);
+  --warning-border: rgba(242, 179, 76, 0.3);
+
+  --danger: var(--rose-400);             /*  7.5:1 on panel：文字 / 图标 */
+  --danger-solid: var(--rose-500);       /* 白字 4.8:1 */
+  --danger-solid-hover: #e5484d;
+  --danger-soft: rgba(255, 128, 128, 0.1);
+  --danger-border: rgba(255, 128, 128, 0.3);
+  --danger-text: #ffb3b3;
+
+  --info-soft: var(--surface-overlay);
+  --focus-ring: var(--violet-200);       /* 8.9:1 on panel */
+
+  /* 窗口控制：关闭按钮 hover 变红（Windows 约定色） */
+  --window-close-hover: #e81123;
+  --window-close-fg: #ffffff;
+  --window-control-hover: var(--hover-tint);
+
+  /* 浮层 / 工具提示：浅色主题下也保持深色，形成"抬起"的层 */
+  --tooltip-bg: #131826;
+  --tooltip-fg: #eef2f8;
+  --tooltip-border: rgba(255, 255, 255, 0.1);
+
+  /* ---------- 6. 间距刻度（4 的倍数，2 用于贴合） ---------- */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* ---------- 7. 圆角：外大内小，成体系 ---------- */
+  --radius-xs: 4px;   /* 微小标记 */
+  --radius-sm: 6px;   /* 徽标 / 小按钮 */
+  --radius-md: 8px;   /* 按钮 / 输入框 / 列表项 */
+  --radius-lg: 12px;  /* 卡片 / 弹窗 */
+  --radius-xl: 16px;  /* 大浮层 */
+  --radius-full: 999px;
+
+  /* ---------- 8. 字体 ---------- */
+  /* 系统字体栈：macOS 用 SF，Windows 用 Segoe UI，中文回落苹方 / 微软雅黑 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Segoe UI Variable Text",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei",
+    "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular,
+    Consolas, "Liberation Mono", monospace;
+
+  --text-2xs: 11px;   /* 最小档：徽标 / 表头 / 时间戳 */
+  --text-xs: 12px;    /* 次要正文、表格、表单控件 */
+  --text-sm: 13px;    /* 正文基准 */
+  --text-md: 14px;    /* 卡片标题 */
+  --text-lg: 16px;    /* 区块标题 */
+  --text-xl: 20px;    /* 页面级标题 */
+  --text-2xl: 24px;   /* 空态 / 首屏大标题 */
+
+  --leading-tight: 1.35;
+  --leading-normal: 1.55;
+  --leading-relaxed: 1.7;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  --tracking-caps: 0.06em;  /* 仅用于全大写英文标签 */
+  --tracking-cn: 0.01em;    /* 中文标题的极轻字距 */
+
+  /* ---------- 9. 阴影：光源统一从上方来，色相跟随底色 ---------- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 6px 20px -8px rgba(0, 0, 0, 0.65), 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 24px 60px -24px rgba(0, 0, 0, 0.8), 0 4px 12px -4px rgba(0, 0, 0, 0.6);
+  --shadow-pop: 0 12px 32px -12px rgba(0, 0, 0, 0.7);
+  --shadow-inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+
+  /* ---------- 10. 动效 ---------- */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;   /* 侧栏折叠 / 展开的时长（150–200ms） */
+  --duration-slow: 260ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ---------- 11. 尺寸 ---------- */
+  --titlebar-height: 48px;
+  /* macOS 左上角红黄绿安全区（约 80px，由 chrome.css 使用） */
+  --titlebar-mac-inset: 80px;
+  --window-control-width: 46px;
+  --window-control-height: 32px;
+
+  /* 侧栏（抽屉）：折叠 = 56，展开默认 220，可拖到 320 */
+  --rail-width: 220px;
+  --rail-expanded-width: 220px;
+  --rail-collapsed-width: 56px;
+  --rail-min-width: 56px;
+  --rail-max-width: 320px;
+  --rail-handle-width: 4px;
+  --rail-item-size: 34px;
+  /*
+   * 当前渲染宽度：由 Sidebar 组件以内联样式写到 .sidebar 上。
+   * 在 token 里声明默认值有两个作用——CSS 的 var() 回退链完整，
+   * 以及 .sidebar 在 JS 尚未挂载的第一帧也有正确宽度（不会先塌成 0）。
+   */
+  --rail-current-width: var(--rail-expanded-width);
+
+  --control-height: 30px;
+  --control-height-sm: 24px;
+  --control-height-lg: 34px;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+  --scrollbar-size: 10px;
+
+  /* ---------- 12. 层级 ---------- */
+  --z-sticky: 1;
+  --z-handle: 12;
+  --z-sidebar: 10;
+  --z-titlebar: 30;
+  --z-modal: 40;
+  --z-tooltip: 45;
+  --z-toast: 50;
+
+  /* ---------- 13. 内容宽度 ---------- */
+  --content-max: 1180px;
+}
+
+/* =============================================================================
+ * 浅色主题：只覆盖语义层，调色板上面那套留给深色用
+ * ========================================================================== */
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --surface-base: #f4f6fb;
+  --surface-raised: #fbfcfe;
+  --surface-panel: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-overlay: #eef2f9;
+  --surface-active: #e5ebf6;
+  --surface-selected: #e7ecfa;
+  --surface-inset: #f5f7fb;
+  --surface-glass: rgba(251, 252, 254, 0.76);
+  --backdrop: rgba(17, 24, 39, 0.32);
+  --hover-tint: rgba(17, 24, 39, 0.045);
+  --row-hover-tint: rgba(17, 24, 39, 0.035);
+  --skeleton-sheen: rgba(255, 255, 255, 0.7);
+  --selection-bg: rgba(75, 86, 210, 0.16);
+
+  --text-primary: #11151c;    /* 18.3:1 on panel */
+  --text-secondary: #40495a;  /*  9.1:1 on panel */
+  --text-muted: #626d80;      /*  5.2:1 on panel / 4.8:1 on base */
+  --text-disabled: #939dae;
+  --text-on-accent: #ffffff;
+  --text-on-danger: #ffffff;
+
+  --border-subtle: #e7ecf4;
+  --border: #dbe2ec;
+  --border-strong: #c2cbd9;
+  --border-control: #8b95a7;  /* 3.0:1 on panel */
+  --border-inverse: rgba(17, 24, 39, 0.06);
+  --border-glass: rgba(17, 24, 39, 0.07);
+
+  --accent: #4b56d2;          /* 白字 5.9:1，on white 5.9:1 */
+  --accent-hover: #414cc6;
+  --accent-active: #3841b4;
+  --accent-text: #3c46c8;     /* 6.6:1 on panel */
+  --accent-soft: rgba(75, 86, 210, 0.1);
+  --accent-ring: rgba(75, 86, 210, 0.32);
+
+  --success: #0f7a52;         /* 5.4:1 on panel */
+  --success-soft: rgba(15, 122, 82, 0.1);
+  --success-border: rgba(15, 122, 82, 0.28);
+
+  --warning: #8a5b00;         /* 5.9:1 on panel */
+  --warning-text: #6f4a00;
+  --warning-soft: rgba(196, 132, 0, 0.12);
+  --warning-border: rgba(196, 132, 0, 0.3);
+
+  --danger: #c02b2b;          /* 5.8:1 on panel */
+  --danger-solid: #c22a2a;
+  --danger-solid-hover: #a82323;
+  --danger-soft: rgba(192, 43, 43, 0.08);
+  --danger-border: rgba(192, 43, 43, 0.24);
+  --danger-text: #8f1f1f;
+
+  --info-soft: var(--surface-overlay);
+  --focus-ring: #4b56d2;
+
+  --window-control-hover: rgba(17, 24, 39, 0.06);
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 8px 24px -12px rgba(16, 24, 40, 0.18), 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 24px 48px -24px rgba(16, 24, 40, 0.28), 0 2px 6px rgba(16, 24, 40, 0.08);
+  --shadow-pop: 0 12px 28px -12px rgba(16, 24, 40, 0.22);
+  --shadow-inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}

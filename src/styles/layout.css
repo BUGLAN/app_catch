@@ -1,0 +1,126 @@
+/* =============================================================================
+ * layout.css — 应用骨架：标题栏 / 抽屉 / 主区 + 响应式断点
+ *
+ * 结构（高度全部由 flex 分配，不使用 100vh）：
+ *   .shell
+ *     .titlebar        48px（自绘，见 chrome.css）
+ *     .body            flex:1
+ *        .sidebar      56–320px（抽屉，见 chrome.css）
+ *        .main         剩余空间，内部纵向滚动
+ *
+ * 断点策略（桌面应用会遇到的真实宽度都覆盖到）：
+ *   ≥1180     宽松：主区留白放大
+ *   1180–901  收紧内边距
+ *   ≤900      抽屉强制折叠成 56px 图标条（见 chrome.css）
+ *   ≤760      单列：抽屉在左仍是图标条，主区占满；标题栏隐藏副标题与搜索
+ *   ≤560      卡片内边距收一档
+ * ========================================================================== */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* 不用 100vh：WebView 里 100vh 会包含被遮挡的区域 */
+  min-height: 0;
+  background: var(--surface-base);
+}
+
+/* ---------- 主体：抽屉 + 主区 ---------- */
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ---------- 主区 ---------- */
+
+.main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-5) var(--space-5) var(--space-8);
+  /*
+   * 只允许纵向滚动：应用壳出现横向滚动条是很糟的体验，也说明某处宽度失控。
+   * 真正需要横向滚动的表格自己有 .table-scroll 容器。
+   */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface-base);
+}
+
+/*
+ * 内容收口：超宽屏上不让键值对与表格拉成一条长线。
+ * min-height:100% 让空态/骨架屏能在整个主区里居中，而不是贴着顶部。
+ */
+.main-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  min-height: 100%;
+}
+
+/* ---------- 抽屉里的小提示（空列表 / 无命中） ---------- */
+
+.rail-hint {
+  padding: var(--space-2) var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+}
+
+.sidebar[data-collapsed="true"] .rail-hint {
+  padding: var(--space-2) 0;
+  text-align: center;
+  /* 折叠态放不下整句，只留一个破折号，避免竖排单字挤成一条 */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 搜索无命中 ---------- */
+
+.search-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+}
+
+.search-empty strong {
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 1180px) {
+  .main {
+    padding: var(--space-4) var(--space-4) var(--space-6);
+  }
+}
+
+@media (max-width: 900px) {
+  .main {
+    padding: var(--space-3) var(--space-3) var(--space-5);
+  }
+}
+
+@media (max-width: 560px) {
+  .main {
+    padding: var(--space-2) var(--space-2) var(--space-4);
+  }
+
+  .main-inner {
+    gap: var(--space-3);
+  }
+}

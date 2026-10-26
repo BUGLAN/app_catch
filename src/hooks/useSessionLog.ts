@@ -11,7 +11,6 @@ import { api, toCommandError } from "../lib/api";
 import {
   advanceCursor,
   appendRows,
-  formatDateTime,
   INITIAL_CURSOR,
   isSessionGone,
   PAGE_LINES,
@@ -174,7 +173,3 @@ export function useSessionLog(session: SessionSnapshot): SessionLogState {
 /** 单次 tick 最多连读多少页，防止一次轮询把主线程占太久。 */
 const MAX_PAGES_PER_TICK = 5;
 
-/** 供界面展示的快照文案工具（避免组件里散落格式化逻辑）。 */
-export function describeStartedAt(ts: string): string {
-  return formatDateTime(ts);
-}

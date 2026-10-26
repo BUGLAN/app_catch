@@ -9,6 +9,8 @@
  *   而不是白屏——M0 里已经有过同样的处理。
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
 import type {
   AppConfig,
   AppConfigInput,
@@ -21,6 +23,9 @@ import type {
 
 /** 非 Tauri 环境的固定错误文案。 */
 export const NOT_HOSTED_MESSAGE = "未连接到 Tauri 宿主（请用 pnpm tauri dev 启动）";
+
+/** 最大化状态变化事件名：与 `src-tauri/src/window.rs` 的 MAXIMIZED_EVENT 一致。 */
+export const MAXIMIZED_EVENT = "window:maximized-changed";
 
 /** 把任意抛出值归一成 CommandError。 */
 export function toCommandError(raw: unknown): CommandError {
@@ -45,6 +50,16 @@ export function toCommandError(raw: unknown): CommandError {
 /** 判断一次失败是否源于「不在 Tauri 宿主里」。 */
 export function isNotHosted(error: CommandError): boolean {
   return error.kind === "not_hosted";
+}
+
+/**
+ * 当前是否运行在 Tauri 宿主里。
+ *
+ * 只看 `__TAURI_INTERNALS__`：这是 Tauri 2 注入的稳定标记，
+ * 比 UA 或"试着 invoke 一次"都可靠，而且是同步的（首帧就要用来决定按钮可否点）。
+ */
+export function isHosted(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -104,8 +119,50 @@ export const api = {
    *
    * 走 data URL 而不是 `asset:` 协议：省掉 assetProtocol scope 与 capability 配置，
    * 少一个只在运行时才暴露的「图裂」故障面（详见 docs/ICONS.md）。
+   *
+   * `force` 为真时忽略命令层的磁盘缓存强制重抓——只用在「会话刚启动」，
+   * 那一刻窗口才出现，窗口档位第一次可能拿到真图标。
    */
-  getAppIcon: (appId: string) => call<string | null>("get_app_icon", { appId }),
+  getAppIcon: (appId: string, force = false) =>
+    call<string | null>("get_app_icon", { appId, force }),
   /** 内置默认图标（PNG data URL），永远可用。 */
   defaultIcon: () => call<string>("default_icon"),
 };
+
+/**
+ * 窗口控制：自绘标题栏用（与 `src-tauri/src/window.rs` 一一对应）。
+ *
+ * 单独成一组（而不是塞进 `api`）：它们只在 Tauri 宿主里存在，
+ * 浏览器预览时调用会得到 `not_hosted`，界面据此把按钮置灰而不是弹错误。
+ */
+export const windowApi = {
+  minimize: () => call<void>("window_minimize"),
+  maximize: () => call<void>("window_maximize"),
+  unmaximize: () => call<void>("window_unmaximize"),
+  /** 切换最大化，返回切换后的状态（true = 已最大化）。 */
+  toggleMaximize: () => call<boolean>("window_toggle_maximize"),
+  isMaximized: () => call<boolean>("window_is_maximized"),
+  close: () => call<void>("window_close"),
+};
+
+/**
+ * 监听最大化状态变化，返回取消监听的函数。
+ *
+ * 非宿主环境下直接返回空操作：`listen` 在浏览器里会抛错，
+ * 而"窗口没有标题栏按钮"本来就不需要这个事件。
+ */
+export async function onMaximizedChange(
+  handler: (maximized: boolean) => void
+): Promise<() => void> {
+  if (!isHosted()) {
+    return () => {};
+  }
+  try {
+    const unlisten = await listen<boolean>(MAXIMIZED_EVENT, (event) => {
+      handler(event.payload === true);
+    });
+    return unlisten;
+  } catch {
+    return () => {};
+  }
+}

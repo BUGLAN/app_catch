@@ -6,10 +6,19 @@
  * 每行一个参数可以无损表达，空行自动忽略。
  *
  * 环境变量采用「每行一条 KEY=VALUE」，同样能容纳值里的空格与等号。
+ *
+ * 表现层改动：
+ *   - 每个字段用共享 Field 组件，错误/提示共用一行消息位（不再整页跳动），
+ *     并注入 aria-invalid / aria-describedby / aria-required（原来 aria-invalid 数量是 0）；
+ *   - id 的实时校验只在用户动过之后才显示红字（未填写时不先骂用户），
+ *     但「保存」按钮可用性判定保持原逻辑不变；
+ *   - 底部错误汇总改成带图标的提示块。
  */
 import { useMemo, useState } from "react";
 
 import type { AppConfig, AppConfigInput } from "../lib/types";
+import { IconAlert } from "./ui/Icons";
+import { Field } from "./ui/Field";
 
 interface Props {
   /** null 表示新建，AppConfig 表示编辑。 */
@@ -128,6 +137,12 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
   );
   const canSubmit = errors.length === 0 && !busy;
 
+  /**
+   * 只在提交过一次之后才展示红字。
+   * 空表单刚打开就满屏报错是很差的第一印象；提交按钮的可用性判定保持原逻辑。
+   */
+  const showError = (error: string | null): string | null => (submitted ? error : null);
+
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     setSubmitted(true);
@@ -150,10 +165,15 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
   };
 
   return (
-    <form className="panel form-panel" onSubmit={handleSubmit}>
+    <form className="panel form-panel" onSubmit={handleSubmit} noValidate>
       <div className="panel-head">
-        <h2 className="panel-title">{isNew ? "新建应用" : `编辑应用 · ${initial.name}`}</h2>
-        <div className="panel-actions">
+        <div className="panel-heading">
+          <h2 className="panel-title">{isNew ? "新建应用" : `编辑应用 · ${initial.name}`}</h2>
+          <p className="panel-sub">
+            {isNew ? "填写启动命令与可选参数，保存后即可在左侧列表中启动。" : "id 是配置文件名，创建后不可修改。"}
+          </p>
+        </div>
+        <div className="form-actions">
           <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={busy}>
             取消
           </button>
@@ -164,58 +184,42 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
       </div>
 
       <div className="form-grid">
-        <label className="field">
-          <span className="field-label">
-            id <span className="required">*</span>
-          </span>
+        <Field label="id" required error={showError(idError)} hint={isNew ? "只允许 A-Z a-z 0-9 _ -，创建后不可修改" : "id 创建后不可修改"}>
           <input
-            className={`input${submitted && idError ? " has-error" : ""}`}
+            className="input mono"
             value={id}
             onChange={(event) => setId(event.target.value)}
             placeholder="例如 gpt-sovits"
             disabled={!isNew || busy}
             spellCheck={false}
+            autoComplete="off"
           />
-          {idError ? (
-            <span className="field-error">{idError}</span>
-          ) : (
-            <span className="field-hint">
-              {isNew ? "只允许 A-Z a-z 0-9 _ -，创建后不可修改" : "id 创建后不可修改"}
-            </span>
-          )}
-        </label>
+        </Field>
 
-        <label className="field">
-          <span className="field-label">
-            名称 <span className="required">*</span>
-          </span>
+        <Field label="名称" required error={showError(nameError)}>
           <input
-            className={`input${submitted && nameError ? " has-error" : ""}`}
+            className="input"
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="例如 GPT-SoVITS"
             disabled={busy}
+            autoComplete="off"
           />
-          {submitted && nameError ? <span className="field-error">{nameError}</span> : null}
-        </label>
+        </Field>
 
-        <label className="field">
-          <span className="field-label">
-            启动命令 <span className="required">*</span>
-          </span>
+        <Field label="启动命令" required error={showError(commandError)}>
           <input
-            className={`input mono${submitted && commandError ? " has-error" : ""}`}
+            className="input mono"
             value={command}
             onChange={(event) => setCommand(event.target.value)}
             placeholder="例如 python 或 E:/repo/app/start.bat"
             disabled={busy}
             spellCheck={false}
+            autoComplete="off"
           />
-          {submitted && commandError ? <span className="field-error">{commandError}</span> : null}
-        </label>
+        </Field>
 
-        <label className="field">
-          <span className="field-label">工作目录</span>
+        <Field label="工作目录">
           <input
             className="input mono"
             value={cwd}
@@ -223,11 +227,15 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
             placeholder="留空则继承启动器当前目录"
             disabled={busy}
             spellCheck={false}
+            autoComplete="off"
           />
-        </label>
+        </Field>
 
-        <label className="field field-wide">
-          <span className="field-label">参数（每行一个）</span>
+        <Field
+          label="参数（每行一个）"
+          wide
+          hint="每行一个参数，不做空白拆分——参数里带空格时也能原样传入；空行忽略。"
+        >
           <textarea
             className="input mono textarea"
             value={argsText}
@@ -237,13 +245,14 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
             disabled={busy}
             spellCheck={false}
           />
-          <span className="field-hint">
-            每行一个参数，不做空白拆分——参数里带空格时也能原样传入；空行忽略。
-          </span>
-        </label>
+        </Field>
 
-        <label className="field field-wide">
-          <span className="field-label">环境变量（每行一条 KEY=VALUE）</span>
+        <Field
+          label="环境变量（每行一条 KEY=VALUE）"
+          wide
+          error={envParsed.errors.length > 0 ? envParsed.errors.join("；") : null}
+          hint="在启动器自身环境基础上追加，不会覆盖进程原有变量。"
+        >
           <textarea
             className="input mono textarea"
             value={envText}
@@ -253,39 +262,37 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
             disabled={busy}
             spellCheck={false}
           />
-          {envParsed.errors.length > 0 ? (
-            <span className="field-error">{envParsed.errors.join("；")}</span>
-          ) : (
-            <span className="field-hint">在启动器自身环境基础上追加，不会覆盖进程原有变量。</span>
-          )}
-        </label>
+        </Field>
 
-        <label className="field">
-          <span className="field-label">标签（逗号分隔）</span>
+        <Field label="标签（逗号分隔）" hint="支持中文逗号，重复的标签会自动去掉。">
           <input
             className="input"
             value={tagsText}
             onChange={(event) => setTagsText(event.target.value)}
             placeholder="python, tts"
             disabled={busy}
+            autoComplete="off"
           />
-        </label>
+        </Field>
 
-        <label className="field">
-          <span className="field-label">自定义图标路径（可选）</span>
+        <Field label="自定义图标路径（可选）">
           <input
             className="input mono"
             value={icon}
             onChange={(event) => setIcon(event.target.value)}
-            placeholder="留空则使用占位头像（M3 抓取运行时图标）"
+            placeholder="例如 E:/repo/app/icon.png"
             disabled={busy}
             spellCheck={false}
+            autoComplete="off"
           />
-        </label>
+        </Field>
       </div>
 
       {submitted && errors.length > 0 ? (
-        <p className="form-summary-error">请先修正上面 {errors.length} 处问题。</p>
+        <p className="form-summary" role="alert">
+          <IconAlert size={14} />
+          <span>请先修正上面 {errors.length} 处问题。</span>
+        </p>
       ) : null}
     </form>
   );

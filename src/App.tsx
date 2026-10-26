@@ -1,8 +1,16 @@
 /**
- * app_catch 主界面：左侧应用列表 + 右侧详情/会话两栏。
+ * app_catch 主界面：自绘标题栏 + 左侧抽屉 + 右侧详情/会话。
  *
- * 状态管理刻意只用一个 `useState` 承载「数据 + 选中态」，
- * 轮询逻辑集中在 {@link usePolling} 里，组件本身只负责渲染。
+ * 状态管理刻意只用一个 useState 承载「数据 + 选中态」，
+ * 轮询逻辑集中在 effect 里，组件本身只负责渲染。
+ *
+ * 本轮改动只碰表现层与窗口外壳：
+ *   所有命令调用、轮询节奏、选中规则、表单载荷完全保持原样。
+ *
+ * 新增的三件事：
+ *   1. 自绘标题栏（Titlebar）替代原来的 .topbar，移除系统窗口边框；
+ *   2. 左侧抽屉（Sidebar）可折叠、可拖拽调宽，状态持久化；
+ *   3. 标题栏全局搜索：按名称 / 标签 / id 过滤左侧列表。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -19,7 +27,17 @@ import { AppDetail } from "./components/AppDetail";
 import { AppForm } from "./components/AppForm";
 import { AppList } from "./components/AppList";
 import { SessionDetail } from "./components/SessionDetail";
-import { Toast, type ToastMessage } from "./components/Toast";
+import { Sidebar } from "./components/Sidebar";
+import { Titlebar } from "./components/Titlebar";
+import { Dialog } from "./components/ui/Dialog";
+import { IconPlus } from "./components/ui/Icons";
+import { EmptyState, PanelSkeleton } from "./components/ui/Primitives";
+import { Toast, type ToastMessage, type ToastTone } from "./components/Toast";
+import { useRailCompact } from "./hooks/useMediaQuery";
+import { useSidebar } from "./hooks/useSidebar";
+import { useTheme } from "./hooks/useTheme";
+import { isHosted } from "./lib/api";
+import { filterApps } from "./lib/search";
 
 /**
  * 会话启动后等待多久再抓「运行时图标」（毫秒）。
@@ -29,6 +47,9 @@ import { Toast, type ToastMessage } from "./components/Toast";
  * 抓不到也不影响任何功能——前端会一直显示默认图。
  */
 const RUNTIME_ICON_DELAY_MS = 1500;
+
+/** 同时显示的 toast 上限：再多会盖住界面。 */
+const MAX_TOASTS = 3;
 
 /** 表单的编辑目标：新建（null）或已有应用。 */
 type FormTarget = AppConfig | null;
@@ -43,6 +64,7 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionSnapshot[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   const [formTarget, setFormTarget] = useState<FormTarget | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
@@ -52,14 +74,47 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   /** 图标刷新触发器：会话启动后 +1，让列表与详情重新抓「运行时图标」。 */
   const [iconRefresh, setIconRefresh] = useState(0);
+  /**
+   * 本次刷新是否要穿透缓存。
+   *
+   * 只有「会话刚启动」那一次是 true：那一刻窗口才出现，窗口档位第一次可能拿到
+   * 应用自设的真图标，必须能覆盖磁盘上早先抓到的 `pnpm.cmd` 通用图标。
+   * 其余刷新保持 false，避免每次点启动都白跑一遍 Shell API。
+   */
+  const [iconForceRefresh, setIconForceRefresh] = useState(false);
+
+  const theme = useTheme();
+  const rail = useSidebar();
+  /*
+   * 图标态 = 用户折叠 或 窗口太窄（CSS 强制）。
+   * 两个来源必须在这里合并：列表的 tooltip、骨架屏形态都只看这一个布尔值。
+   *
+   * 注意：hook 必须无条件调用（不能写成 `rail.collapsed || useRailCompact()`）。
+   * 短路求值会让折叠时整个 hook 不被调用，Hook 顺序随之改变 ——
+   * 展开/折叠一次就会触发 "Rendered fewer hooks than expected" 白屏。
+   */
+  const windowNarrow = useRailCompact();
+  const compactRail = rail.collapsed || windowNarrow;
+  const hosted = useMemo(() => isHosted(), []);
 
   const toastSeq = useRef(0);
 
-  const pushToast = useCallback((error: CommandError | string) => {
-    const message = typeof error === "string" ? error : error.message;
+  /**
+   * 追加一条 toast。
+   *
+   * 相同文案不重复堆叠：轮询类命令失败时原来每秒都会 push 一条一模一样的提示
+   * （实测界面上同时出现 3 条相同红条）。这里复用旧条目并刷新它的 id，
+   * 让 React 重新挂载该条目从而重置 3.5s 计时。
+   */
+  const pushToast = useCallback((input: CommandError | string, tone: ToastTone = "error") => {
+    const message = typeof input === "string" ? input : input.message;
     toastSeq.current += 1;
     const id = toastSeq.current;
-    setToasts((prev) => prev.concat({ id, message }));
+    setToasts((prev) => {
+      const deduped = prev.filter((toast) => toast.message !== message);
+      const next = deduped.concat({ id, message, tone });
+      return next.length > MAX_TOASTS ? next.slice(next.length - MAX_TOASTS) : next;
+    });
   }, []);
 
   const dismissToast = useCallback((id: number) => {
@@ -154,6 +209,9 @@ export default function App() {
     };
   }, [run]);
 
+  /** 搜索过滤后的列表（只影响显示，不动原始数据与选中规则）。 */
+  const visibleApps = useMemo(() => filterApps(apps, query), [apps, query]);
+
   const selectedApp = useMemo(
     () => apps.find((app) => app.id === selectedId) ?? null,
     [apps, selectedId]
@@ -194,7 +252,11 @@ export default function App() {
         // 会话起来后窗口才存在：此刻才可能抓到基线说的「运行时真图标」。
         // 延迟一拍再抓，给窗口创建留出时间（抓不到也无所谓，静默兜底）。
         invalidateIcon(app.id);
-        window.setTimeout(() => setIconRefresh((value) => value + 1), RUNTIME_ICON_DELAY_MS);
+        window.setTimeout(() => {
+          // 强制穿透磁盘缓存：此刻窗口已存在，窗口档位才有可能抓到真图标
+          setIconForceRefresh(true);
+          setIconRefresh((value) => value + 1);
+        }, RUNTIME_ICON_DELAY_MS);
       }
     },
     [run]
@@ -232,15 +294,16 @@ export default function App() {
   const handleSave = useCallback(
     async (input: AppConfigInput, isNew: boolean) => {
       setBusy(true);
-      const saved = await run(() =>
-        isNew ? api.createApp(input) : api.updateApp(input)
-      );
+      const saved = await run(() => (isNew ? api.createApp(input) : api.updateApp(input)));
       setBusy(false);
       if (saved) {
         await refresh();
         setSelectedId(saved.id);
         setFormTarget(undefined);
-        pushToast(isNew ? `已创建应用「${saved.name}」` : `已保存应用「${saved.name}」`);
+        pushToast(
+          isNew ? `已创建应用「${saved.name}」` : `已保存应用「${saved.name}」`,
+          "success"
+        );
       }
     },
     [pushToast, refresh, run]
@@ -256,134 +319,200 @@ export default function App() {
     setDeleteTarget(null);
     if (done !== undefined) {
       await refresh();
-      pushToast(`已删除应用「${deleteTarget.app.name}」`);
+      pushToast(`已删除应用「${deleteTarget.app.name}」`, "success");
     }
   }, [deleteTarget, pushToast, refresh, run]);
 
+  /** 打开表单：null 表示新建，AppConfig 表示编辑。 */
   const editing = formTarget !== undefined;
+  const openForm = useCallback((target: FormTarget) => setFormTarget(target), []);
+
+  const closeForm = useCallback(() => setFormTarget(undefined), []);
+
+  const closeDialog = useCallback(() => setDeleteTarget(null), []);
+
+  /**
+   * 主区内容：表单 / 加载中 / 详情 / 空态。
+   *
+   * 表单优先于加载态：首屏还在拉列表时用户就点了「新建应用」，
+   * 不能让他看着骨架屏干等而没有任何反馈。
+   */
+  let mainContent: React.ReactNode;
+  if (editing) {
+    mainContent = (
+      <AppForm
+        key={formTarget?.id ?? "__new__"}
+        initial={formTarget ?? null}
+        busy={busy}
+        onSubmit={handleSave}
+        onCancel={closeForm}
+      />
+    );
+  } else if (loading) {
+    mainContent = <PanelSkeleton />;
+  } else if (selectedApp) {
+    mainContent = (
+      <div className="detail-stack">
+        <AppDetail
+          app={selectedApp}
+          sessions={appSessions}
+          selectedSession={activeSession?.session_id ?? null}
+          busy={busy}
+          onStart={() => handleStart(selectedApp)}
+          onStop={handleStop}
+          onRestart={handleRestart}
+          onEdit={() => openForm(selectedApp)}
+          onDelete={() => setDeleteTarget({ app: selectedApp })}
+          onSelectSession={setSelectedSession}
+          iconRefresh={iconRefresh}
+          iconForceRefresh={iconForceRefresh}
+        />
+        {activeSession ? (
+          <SessionDetail
+            key={activeSession.session_id}
+            session={activeSession}
+            allSessions={sessions}
+          />
+        ) : (
+          <div className="empty-panel">该应用当前没有运行中的会话。</div>
+        )}
+      </div>
+    );
+  } else {
+    mainContent = (
+      <EmptyState
+        title="还没有任何应用"
+        description="app_catch 不做自动发现，应用需要手动录入。"
+        action={
+          <button type="button" className="btn btn-primary" onClick={() => openForm(null)}>
+            <IconPlus size={14} />
+            新建第一个应用
+          </button>
+        }
+      />
+    );
+  }
+
+  /** 侧栏内容：加载中 / 搜索无命中 / 列表。 */
+  let railContent: React.ReactNode;
+  if (loading) {
+    railContent = (
+      <AppList
+        apps={[]}
+        sessions={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        onStart={() => {}}
+        busy
+        loading
+        collapsed={compactRail}
+      />
+    );
+  } else if (apps.length > 0 && visibleApps.length === 0) {
+    railContent = (
+      <p className="search-empty">
+        <strong>没有匹配「{query.trim()}」的应用</strong>
+        <span>试试应用名、标签或 id。</span>
+      </p>
+    );
+  } else {
+    railContent = (
+      <AppList
+        apps={visibleApps}
+        sessions={sessions}
+        selectedId={selectedId}
+        onSelect={(app) => {
+          setSelectedId(app.id);
+          setFormTarget(undefined);
+        }}
+        onStart={handleStart}
+        busy={busy}
+        iconRefresh={iconRefresh}
+        iconForceRefresh={iconForceRefresh}
+        collapsed={compactRail}
+      />
+    );
+  }
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">ac</span>
-          <div className="brand-text">
-            <strong>app_catch</strong>
-            <span className="brand-sub">开发者向应用启动器</span>
-          </div>
-        </div>
+    <div
+      className="shell"
+      data-resizing={rail.resizing ? "true" : "false"}
+    >
+      <a className="skip-link" href="#main-content">
+        跳到主内容
+      </a>
 
-        <div className="topbar-actions">
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => setFormTarget(null)}
-            disabled={busy}
-          >
-            + 新建应用
-          </button>
-        </div>
-      </header>
+      <Titlebar
+        query={query}
+        onQueryChange={setQuery}
+        matchCount={query.trim().length > 0 ? visibleApps.length : null}
+        onNewApp={() => openForm(null)}
+        busy={busy}
+        onWindowError={(error) => pushToast(error.message)}
+      />
 
       <div className="body">
-        <aside className="sidebar">
-          <div className="sidebar-head">
-            <span>应用</span>
-            <span className="count">{apps.length}</span>
-          </div>
-          {loading ? (
-            <p className="sidebar-hint">加载中…</p>
-          ) : (
-            <AppList
-              apps={apps}
-              sessions={sessions}
-              selectedId={selectedId}
-              onSelect={(app) => {
-                setSelectedId(app.id);
-                setFormTarget(undefined);
-              }}
-              onStart={handleStart}
-              busy={busy}
-              iconRefresh={iconRefresh}
-            />
-          )}
-        </aside>
+        <Sidebar
+          count={apps.length}
+          loading={loading}
+          rail={rail}
+          themeMode={theme.mode}
+          onCycleTheme={theme.cycle}
+          hosted={hosted}
+          compact={compactRail && !rail.collapsed}
+        >
+          {railContent}
+        </Sidebar>
 
-        <main className="main">
-          {editing && formTarget !== undefined ? (
-            <AppForm
-              initial={formTarget}
-              busy={busy}
-              onSubmit={(input, isNew) => handleSave(input, isNew)}
-              onCancel={() => setFormTarget(undefined)}
-            />
-          ) : formTarget === null ? (
-            <AppForm
-              initial={null}
-              busy={busy}
-              onSubmit={(input, isNew) => handleSave(input, isNew)}
-              onCancel={() => setFormTarget(undefined)}
-            />
-          ) : selectedApp ? (
-            <div className="detail-stack">
-              <AppDetail
-                app={selectedApp}
-                sessions={appSessions}
-                selectedSession={activeSession?.session_id ?? null}
-                busy={busy}
-                onStart={() => handleStart(selectedApp)}
-                onStop={handleStop}
-                onRestart={handleRestart}
-                onEdit={() => setFormTarget(selectedApp)}
-                onDelete={() => setDeleteTarget({ app: selectedApp })}
-                onSelectSession={setSelectedSession}
-                iconRefresh={iconRefresh}
-              />
-              {activeSession ? (
-                <SessionDetail
-                  key={activeSession.session_id}
-                  session={activeSession}
-                  allSessions={sessions}
-                />
-              ) : (
-                <p className="empty-panel">该应用当前没有运行中的会话。</p>
-              )}
-            </div>
-          ) : (
-            <div className="empty-state">
-              <h2>还没有任何应用</h2>
-              <p>app_catch 不做自动发现，应用需要手动录入。</p>
-              <button type="button" className="btn btn-primary" onClick={() => setFormTarget(null)}>
-                + 新建第一个应用
-              </button>
-            </div>
-          )}
+        <main
+          className="main"
+          id="main-content"
+          tabIndex={-1}
+          aria-busy={loading}
+          aria-label="主内容"
+        >
+          <div className="main-inner">{mainContent}</div>
         </main>
       </div>
 
       {deleteTarget ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal">
-            <h3>确认删除</h3>
-            <p>
-              将删除应用配置「<strong>{deleteTarget.app.name}</strong>」（id: {deleteTarget.app.id}）。
-            </p>
-            <p className="modal-note">已有会话目录与日志不会被删除，仍可在 sessions 目录中查看。</p>
-            <div className="modal-actions">
-              <button type="button" className="btn" onClick={() => setDeleteTarget(null)}>
+        <Dialog
+          title="确认删除"
+          onClose={closeDialog}
+          actions={
+            <>
+              <button
+                type="button"
+                className="btn"
+                onClick={closeDialog}
+                data-variant="cancel"
+              >
                 取消
               </button>
-              <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={busy}>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={handleDelete}
+                disabled={busy}
+              >
                 确认删除
               </button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+        >
+          <p>
+            将删除应用配置「<strong>{deleteTarget.app.name}</strong>」（id: {deleteTarget.app.id}）。
+          </p>
+          <p className="modal-note">
+            已有会话目录与日志不会被删除，仍可在 sessions 目录中查看。
+          </p>
+        </Dialog>
       ) : null}
 
       <Toast toasts={toasts} onDismiss={dismissToast} />
 
-      {boot?.error ? <span className="sr-only">{boot.home}</span> : null}
+      {boot?.error ? <span className="sr-only">数据目录：{boot.home}</span> : null}
     </div>
   );
 }

@@ -6,12 +6,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const getAppIcon = vi.fn<(appId: string) => Promise<string | null>>();
+const getAppIcon = vi.fn<(appId: string, force?: boolean) => Promise<string | null>>();
 const defaultIcon = vi.fn<() => Promise<string>>();
 
 vi.mock("./api", () => ({
   api: {
-    getAppIcon: (appId: string) => getAppIcon(appId),
+    getAppIcon: (appId: string, force?: boolean) => getAppIcon(appId, force),
     defaultIcon: () => defaultIcon(),
   },
 }));
@@ -37,7 +37,7 @@ describe("loadIcon", () => {
   it("把 data URL 原样返回", async () => {
     getAppIcon.mockResolvedValue(PNG_URL);
     await expect(loadIcon("demo")).resolves.toBe(PNG_URL);
-    expect(getAppIcon).toHaveBeenCalledWith("demo");
+    expect(getAppIcon).toHaveBeenCalledWith("demo", false);
   });
 
   it("同一 app_id 二次调用命中会话内缓存，不再请求", async () => {
@@ -95,6 +95,34 @@ describe("loadIcon", () => {
     invalidateIcon("demo");
     getAppIcon.mockResolvedValue(PNG_URL);
     await expect(loadIcon("demo")).resolves.toBe(PNG_URL);
+    expect(getAppIcon).toHaveBeenCalledTimes(2);
+  });
+
+  it("force=true 绕过内存缓存，真的重新 invoke", async () => {
+    getAppIcon.mockResolvedValue(PNG_URL);
+    await loadIcon("forced");
+    expect(getAppIcon).toHaveBeenCalledTimes(1);
+
+    // 普通调用：命中内存缓存
+    await loadIcon("forced");
+    expect(getAppIcon).toHaveBeenCalledTimes(1);
+
+    // force：绕过内存缓存，并把 force 透传给命令层
+    const other = "data:image/png;base64,AAAA";
+    getAppIcon.mockResolvedValue(other);
+    await expect(loadIcon("forced", true)).resolves.toBe(other);
+    expect(getAppIcon).toHaveBeenCalledTimes(2);
+    expect(getAppIcon).toHaveBeenLastCalledWith("forced", true);
+  });
+
+  it("force=true 的结果会覆盖缓存，后续普通调用拿到新值", async () => {
+    getAppIcon.mockResolvedValue("data:image/png;base64,OLD");
+    await loadIcon("upgrade");
+    getAppIcon.mockResolvedValue("data:image/png;base64,NEW");
+    await loadIcon("upgrade", true);
+    // 再普通调用一次：应直接命中已更新的内存缓存，不再 IPC
+    expect(getAppIcon).toHaveBeenCalledTimes(2);
+    await expect(loadIcon("upgrade")).resolves.toBe("data:image/png;base64,NEW");
     expect(getAppIcon).toHaveBeenCalledTimes(2);
   });
 
