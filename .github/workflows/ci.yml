@@ -1,0 +1,77 @@
+name: CI
+
+# 普通 push / PR 的构建校验：前端测试 + Rust 测试 + 完整打包。
+# 发布流程（建 Release、上传安装包与 latest.json）只在 tag 触发的
+# release.yml 里执行，两个文件刻意分开避免发布步骤误跑到日常分支上。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # Windows runner 默认是 pwsh；统一 bash 让 JSON 参数与路径写法在三个平台一致
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 日常校验只跑每个操作系统的主目标，全量目标留给 release.yml
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm 版本读 package.json 的 packageManager 字段，与本机一致
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端测试（含版本号 / 更新端点契约）
+        run: pnpm test
+
+      - name: Rust 测试
+        run: cargo test --workspace --locked
+
+      # 完整打包一遍，确保打包流程随时可用。
+      # 更新签名件（.sig）需要私钥，日常校验没有也不该有：
+      # 用 --config 覆盖掉 createUpdaterArtifacts，避免缺密钥导致构建失败。
+      - name: 打包校验（不生成更新签名件）
+        run: >-
+          pnpm tauri build --target ${{ matrix.target }}
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      # 构建产物同时留一份 workflow artifact，失败时不用本地复现也能排查
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-bundle-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: warn
+          retention-days: 7

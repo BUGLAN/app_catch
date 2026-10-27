@@ -29,6 +29,8 @@ use app_state::AppState;
 /// 这样恢复慢（枚举进程表）也不会拖慢窗口显示。
 pub fn run() {
     tauri::Builder::default()
+        // relaunch 属于进程能力，任何平台都可能用到（更新装完后的重启按钮）
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // 初始化失败（例如主目录不可用）直接把错误交给 Tauri 报错退出，
             // 而不是带着半初始化状态继续跑——那样界面会全是莫名其妙的错误。
@@ -36,6 +38,10 @@ pub fn run() {
             app.manage(state);
             // 自定义标题栏依赖「最大化 / 还原」图标能跟着窗口状态变：挂上监听
             window::attach_maximize_watcher(app.handle());
+            // 自动更新只在桌面端启用；endpoints/公钥都在 tauri.conf.json 的
+            // plugins.updater 里，前端通过 updater:default 权限调用 check/download/install。
+            #[cfg(desktop)]
+            app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -17,6 +17,10 @@ tauri-build = { workspace = true }
 
 [dependencies]
 tauri = { workspace = true }
+# 自动更新：检查 / 下载 / 安装 GitHub Releases 上的更新包（仅桌面端初始化）
+tauri-plugin-updater = { workspace = true }
+# 更新装完后的「重启应用」按钮需要 relaunch
+tauri-plugin-process = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 launcher-core = { workspace = true }

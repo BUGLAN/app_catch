@@ -27,6 +27,7 @@ import { AppDetail } from "./components/AppDetail";
 import { AppForm } from "./components/AppForm";
 import { AppList } from "./components/AppList";
 import { SessionDetail } from "./components/SessionDetail";
+import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { Titlebar } from "./components/Titlebar";
 import { Dialog } from "./components/ui/Dialog";
@@ -37,7 +38,9 @@ import { useRailCompact } from "./hooks/useMediaQuery";
 import { useSidebar } from "./hooks/useSidebar";
 import { useTheme } from "./hooks/useTheme";
 import { isHosted } from "./lib/api";
+import { readUpdatePrefs } from "./lib/preferences";
 import { filterApps } from "./lib/search";
+import { backgroundCheckForUpdate } from "./lib/updater";
 
 /**
  * 会话启动后等待多久再抓「运行时图标」（毫秒）。
@@ -67,6 +70,10 @@ export default function App() {
   const [query, setQuery] = useState("");
 
   const [formTarget, setFormTarget] = useState<FormTarget | undefined>(undefined);
+  /** 设置页（关于 / 版本 / 更新）是否打开：打开时主区整体切换。 */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 启动静默检查发现的新版本：进设置页直接展示，消费后清空。 */
+  const [availableVersion, setAvailableVersion] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -175,6 +182,26 @@ export default function App() {
     // refresh/run 是 useCallback 稳定引用，这里只跑一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 启动静默检查更新：只在「宿主内 + 非开发模式 + 偏好开启」时进行。
+  // backgroundCheckForUpdate 内部吞掉一切失败——启动路径上的网络抖动不该弹错误；
+  // 发现新版本只提示一次，安装动作留给用户进设置页主动触发。
+  useEffect(() => {
+    if (!hosted || import.meta.env.DEV || !readUpdatePrefs().autoCheck) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const found = await backgroundCheckForUpdate();
+      if (!cancelled && found) {
+        setAvailableVersion(found);
+        pushToast(`发现新版本 v${found}，可在「设置」中安装`, "success");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hosted, pushToast]);
 
   // 轮询间隔读的是运行中会话数，但绝不能让 effect 依赖 sessions：
   // 那样每次轮询写回 sessions 都会重跑 effect、重置定时器，形成自我触发的循环。
@@ -325,7 +352,16 @@ export default function App() {
 
   /** 打开表单：null 表示新建，AppConfig 表示编辑。 */
   const editing = formTarget !== undefined;
-  const openForm = useCallback((target: FormTarget) => setFormTarget(target), []);
+  const openForm = useCallback((target: FormTarget) => {
+    setSettingsOpen(false);
+    setFormTarget(target);
+  }, []);
+
+  /** 打开设置页：同时关掉表单，主区一次只承载一个视图。 */
+  const openSettings = useCallback(() => {
+    setFormTarget(undefined);
+    setSettingsOpen(true);
+  }, []);
 
   const closeForm = useCallback(() => setFormTarget(undefined), []);
 
@@ -338,7 +374,14 @@ export default function App() {
    * 不能让他看着骨架屏干等而没有任何反馈。
    */
   let mainContent: React.ReactNode;
-  if (editing) {
+  if (settingsOpen) {
+    mainContent = (
+      <SettingsView
+        availableVersion={availableVersion}
+        onConsumeAvailableVersion={() => setAvailableVersion(null)}
+      />
+    );
+  } else if (editing) {
     mainContent = (
       <AppForm
         key={formTarget?.id ?? "__new__"}
@@ -424,6 +467,7 @@ export default function App() {
         onSelect={(app) => {
           setSelectedId(app.id);
           setFormTarget(undefined);
+          setSettingsOpen(false);
         }}
         onStart={handleStart}
         busy={busy}
@@ -460,6 +504,8 @@ export default function App() {
           themeMode={theme.mode}
           onCycleTheme={theme.cycle}
           hosted={hosted}
+          onOpenSettings={openSettings}
+          settingsActive={settingsOpen}
           compact={compactRail && !rail.collapsed}
         >
           {railContent}

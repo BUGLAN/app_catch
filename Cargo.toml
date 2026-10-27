@@ -69,3 +69,7 @@ png = "0.18"
 tempfile = "3"
 tauri = { version = "2" }
 tauri-build = { version = "2" }
+# 自动更新（桌面端）：从 GitHub Releases 拉 latest.json，校验 minisign 签名后安装
+tauri-plugin-updater = "2"
+# 更新安装完成后 relaunch（重启进新版本）
+tauri-plugin-process = "2"

@@ -32,6 +32,10 @@ interface Props {
   onCycleTheme: () => void;
   /** 是否运行在 Tauri 宿主里（底部状态点）。 */
   hosted: boolean;
+  /** 打开设置页（关于 / 版本 / 更新）。 */
+  onOpenSettings: () => void;
+  /** 设置页是否处于打开状态（高亮入口）。 */
+  settingsActive?: boolean;
   /** 窗口太窄、侧栏被 CSS 强制成图标态：此时折叠按钮无意义，置灰并说明原因。 */
   compact?: boolean;
   /** 应用列表（由 App 传入，避免这一层依赖数据层）。 */
@@ -51,6 +55,8 @@ export function Sidebar({
   themeMode,
   onCycleTheme,
   hosted,
+  onOpenSettings,
+  settingsActive = false,
   compact = false,
   children,
 }: Props) {
@@ -177,7 +183,14 @@ export function Sidebar({
         </Tooltip>
 
         <Tooltip label="设置" enabled={collapsed}>
-          <button type="button" className="rail-action" title="设置（即将支持）" disabled>
+          <button
+            type="button"
+            className="rail-action"
+            title="设置（关于 / 版本 / 更新）"
+            aria-current={settingsActive ? "page" : undefined}
+            data-active={settingsActive ? "true" : "false"}
+            onClick={onOpenSettings}
+          >
             <span className="rail-action-icon">
               <IconSettings size={15} />
             </span>

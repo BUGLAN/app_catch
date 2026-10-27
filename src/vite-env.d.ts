@@ -1,6 +1,13 @@
 /// <reference types="vite/client" />
 
 /*
+ * 编译期注入的应用版本号（vite.config.ts 的 define，来源 package.json）。
+ * 运行时真实版本以 @tauri-apps/api/app 的 getVersion()（tauri.conf.json）为准，
+ * 这个常量只在浏览器预览等拿不到宿主 API 的环境里兜底。
+ */
+declare const __APP_VERSION__: string;
+
+/*
  * 样式契约测试（src/lib/styleContract.test.ts）需要直接读源文件做静态检查。
  *
  * 全仓库只有这一个测试用到 Node 内置模块。这里只声明真正用到的两个 API，

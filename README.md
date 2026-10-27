@@ -22,7 +22,8 @@
 | `docs/GUI.md` | **M2**：界面结构、命令层 API 一览、轮询策略、分片读取与边写边读的安全性、已知限制。 |
 | `docs/ICONS.md` | **M3**：图标优先级链、PNG 规范、缓存位置与失效规则、兜底语义、为什么用 data URL 与 `png` crate、已知限制。 |
 | `docs/E2E.md` | **M5**：Windows 打包说明、真实项目端到端验收流程、CDP 驱动安装版 GUI 的方法、会话目录复原工具。 |
-| `scripts/` | `e2e-installed-gui.mjs`（CDP 驱动安装版 GUI）与 `session-replay.mjs`（只读会话目录复原全过程）。 |
+| `scripts/` | `e2e-installed-gui.mjs`（CDP 驱动安装版 GUI）、`session-replay.mjs`（只读会话目录复原全过程）与 `merge-updater-manifests.mjs`（CI 里把各平台签名合并成 `latest.json`）。 |
+| `.github/workflows/` | `ci.yml`（push/PR 构建校验）与 `release.yml`（tag 触发：矩阵打包 + GitHub Release + 更新清单）。 |
 | `Cargo.toml` | cargo workspace 根，成员为 `crates/launcher-core` 与 `src-tauri`，公共依赖集中在 `[workspace.dependencies]`。 |
 
 ## 前置依赖
@@ -187,6 +188,8 @@ E:\tmp\app_catch_install\app-catch.exe
 | M3 | 图标：Windows 抓取 + 缓存 + 兜底 | ✅ 已完成 |
 | M4 | macOS 对齐：构建通过、进程组语义、图标抓取 | ⏳ 待做 |
 | M5 | 打包与端到端验收：NSIS/MSI 安装包产出，用真实项目（Python 服务 + GUI 应用）走完整流程，并用安装版验证闭环 | ✅ 已完成 |
+| M6 | 界面外壳：自绘标题栏、可折叠抽屉、双主题、全局搜索与视觉重构 | ✅ 已完成 |
+| M7 | 发布与自动更新：GitHub Actions CI/Release、设置页版本展示、tauri-plugin-updater 全流程 | ✅ 已完成 |
 
 ## launcher-core 模块一览
 
@@ -242,6 +245,42 @@ node scripts/session-replay.mjs "$APP_CATCH_HOME/sessions/<session_id>"
 
 > 数据隔离：所有测试通过环境变量 `APP_CATCH_HOME` 指向 `tempfile` 临时目录，**绝不触碰真实的 `~/.app_catch`**。
 
+## 发布与自动更新
+
+### 方案
+
+- 桌面端更新采用 Tauri 官方 [`tauri-plugin-updater`](https://v2.tauri.app/plugin/updater/)（v2）配 `tauri-plugin-process`（安装后 relaunch）：
+  - `src-tauri/tauri.conf.json` 里 `bundle.createUpdaterArtifacts: true`，打包时额外产出更新包与 `.sig` minisign 签名（Windows 复用 NSIS 的 `-setup.exe`，macOS 用 `.app.tar.gz`）；
+  - `plugins.updater` 配置公钥与更新清单地址 `https://github.com/BUGLAN/app_catch/releases/latest/download/latest.json`，与 CI 发布的资产同源；
+  - 前端封装在 `src/lib/updater.ts`（支持判定、静默检查、错误归一），界面在设置页「关于与更新」：版本号、检查更新、下载进度、待重启、失败原因、自动检查开关。
+- 版本号单一来源：运行时「关于」页经 `getVersion()` 读 `tauri.conf.json` 的版本（与安装包同名）；`package.json` / `tauri.conf.json` / workspace `Cargo.toml` 三方一致由 `src/lib/versionContract.test.ts` 在 CI 里守护。
+
+### CI 与发布流程
+
+| 工作流 | 触发 | 做什么 |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | push（任意分支）/ PR | Windows + macOS 各自跑 `pnpm test`、`cargo test --workspace --locked`、完整 `tauri build`（用 `--config` 关闭更新签名件，无需私钥）；产物留 workflow artifact |
+| `.github/workflows/release.yml` | 推送 `v*.*.*` tag | macOS aarch64/x86_64 + Windows x64 矩阵打包并签名更新产物 → 汇总创建 GitHub Release（名称与正文取自 tag 说明）→ 上传安装包与合并后的 `latest.json` |
+
+发版步骤：把三处版本号一起改（测试会拦下不一致）→ 提交 → `git tag -a v0.x.y -m "发布说明"` → `git push origin v0.x.y`。
+
+### 需要配置的 secrets（GitHub 仓库 Settings → Secrets and variables → Actions）
+
+| Secret | 内容 | 来源 |
+| --- | --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | 更新签名私钥的**内容**（文本，不是路径） | 本机 `~/.app_catch-updater/app_catch.key`（2026-10-26 生成，**未入库**） |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 上述私钥的密码 | 本机 `~/.app_catch-updater/password.txt` |
+
+> 未配置这两个 secret 时：`ci.yml` 照常通过；`release.yml` 会在打包签名一步失败（构建产物仍留作 artifact 供排查），`latest.json` 也不会生成。公钥已写入 `tauri.conf.json`，与私钥成对出现；**私钥或密码一旦丢失，已安装用户将无法再收到新更新**，请离线备份这两份文件。
+>
+> macOS 产物目前未做 Apple 开发者签名（不影响 Windows 更新；macOS 首次打开需右键「打开」绕过 Gatekeeper）。若之后要做公证，再补 `APPLE_CERTIFICATE` 等 secrets 即可，与现有流程不冲突。
+
+### 本地开发与更新检查
+
+- `pnpm tauri dev` 与浏览器预览里更新器整体禁用（`updaterSupported()`：非宿主或 `import.meta.env.DEV` 判为不可用），设置页显示禁用原因而不是报错，也不会发起任何请求；
+- 启动静默检查只在「宿主内 + 非开发 + 偏好开启」时进行（设置页可关），失败完全静默，只有发现新版本才提示一次；
+- 本地想手工走一遍更新流：设好 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量后 `pnpm tauri build`，把 `src-tauri/target/release/bundle/` 下的安装包、`.sig` 与手工合并的 `latest.json` 传到一个测试 Release，再装一个旧版本点「检查更新」。
+
 ## 测试
 
 | 层 | 命令 | 覆盖 |
@@ -250,7 +289,8 @@ node scripts/session-replay.mjs "$APP_CATCH_HOME/sessions/<session_id>"
 | launcher-core 图标 | `cargo test -p launcher-core --test icon_capture` | **真实 notepad.exe 图标**、真实 WinForms 窗口图标、缓存命中（mtime 不变）、兜底语义、自定义图标优先级 |
 | src-tauri 单元 | `cargo test -p app-catch --lib` | 错误转换、DTO 校验、事件分片读取（含半行/轮转/裁剪）、默认图 data URL |
 | src-tauri 集成 | `cargo test -p app-catch --test session_events` | 真实进程跑出真实分片，分页游标与直读结果逐条比对 |
-| 前端 | `pnpm test` | 日志行转换、游标推进、lossy 判定、自动滚底、表单解析、图标缓存与降级 |
+| 前端 | `pnpm test` | 日志行转换、游标推进、lossy 判定、自动滚底、表单解析、图标缓存与降级、更新状态机、版本与更新端点契约 |
+| 发布脚本 | `pnpm test`（`scripts/merge-updater-manifests.test.mjs`） | latest.json 合并：平台映射、安装包优先级、URL 构造、异常输入 |
 
 ## 约定
 

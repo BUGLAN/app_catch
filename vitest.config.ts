@@ -7,11 +7,14 @@ import { defineConfig } from "vitest/config";
  * 测试目标限定在不碰 DOM 的模块：`src/lib/logModel.ts` 与
  * `src/components/AppForm.tsx` 里导出的纯函数（表单组件本身不渲染）。
  * 组件渲染级测试留给后续里程碑，需要时再引入 @testing-library/react。
+ *
+ * scripts/ 下的发布脚本测试（latest.json 合并）只用 node:fs，同样无 DOM，
+ * 一并纳入扫描。
  */
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
     reporters: ["default"],
   },
 });

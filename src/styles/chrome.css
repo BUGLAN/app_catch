@@ -484,6 +484,24 @@
   background: var(--surface-active);
 }
 
+/* 设置页打开时：与列表选中项同一语义（背景选中面 + 左侧强调条） */
+.rail-action[data-active="true"] {
+  position: relative;
+  background: var(--surface-selected);
+  color: var(--text-primary);
+}
+
+.rail-action[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 20%;
+  height: 60%;
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
 .sidebar[data-collapsed="true"] .rail-action {
   justify-content: center;
   width: var(--rail-item-size);

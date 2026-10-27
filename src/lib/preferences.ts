@@ -12,7 +12,39 @@
 export const STORAGE_KEYS = {
   theme: "app_catch.theme",
   rail: "app_catch.sidebar",
+  updater: "app_catch.updater",
 } as const;
+
+/* -------------------------------------------------------------------------- */
+/* 更新偏好                                                                     */
+/* -------------------------------------------------------------------------- */
+
+/** 自动更新偏好（目前只有一项：启动时是否静默检查）。 */
+export interface UpdatePrefs {
+  autoCheck: boolean;
+}
+
+/** 默认开启：这是桌面应用的常规预期，关闭是用户的主动选择。 */
+export const DEFAULT_UPDATE_PREFS: UpdatePrefs = { autoCheck: true };
+
+/**
+ * 读更新偏好。
+ *
+ * 与其它偏好同样的防御：值损坏 / 手改过 / 旧版本没写过的键，
+ * 一律退回默认值，绝不让「读偏好」这件事抛错。
+ */
+export function readUpdatePrefs(): UpdatePrefs {
+  const raw = readJson<Partial<UpdatePrefs>>(STORAGE_KEYS.updater);
+  if (raw === null || typeof raw.autoCheck !== "boolean") {
+    return { ...DEFAULT_UPDATE_PREFS };
+  }
+  return { autoCheck: raw.autoCheck };
+}
+
+/** 写更新偏好；失败静默（只影响下次启动是否自动检查）。 */
+export function writeUpdatePrefs(prefs: UpdatePrefs): void {
+  writeJson(STORAGE_KEYS.updater, prefs);
+}
 
 /** 读一个 JSON 值；任何异常/缺失都返回 null。 */
 export function readJson<T>(key: string): T | null {

@@ -1,0 +1,159 @@
+name: Release
+
+# 推送 v*.*.* 形式的 tag 时：矩阵构建 macOS（aarch64 + x86_64）与 Windows（x64），
+# 产出安装包与更新签名件，然后创建 GitHub Release 并上传：
+#   - 各平台安装包（.dmg / .app.tar.gz / -setup.exe / .msi）
+#   - 合并后的更新清单 latest.json（tauri-plugin-updater 的 endpoint 指向它）
+#
+# 需要的仓库 secrets（缺失时签名与清单步骤会失败，构建产物仍留作 artifact）：
+#   TAURI_SIGNING_PRIVATE_KEY          更新产物签名私钥（本机 ~/.app_catch-updater/app_catch.key 的内容）
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD 私钥密码（本机 ~/.app_catch-updater/password.txt）
+# 说明与密钥保管见 README「发布与自动更新」一节。
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write # softprops/action-gh-release 用自带 GITHUB_TOKEN 建 Release、传资产
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      # TAURI_SIGNING_PRIVATE_KEY 可以是私钥内容，也可以是文件路径（见 tauri signer 文档）
+      - name: 打包并签名更新产物
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      - name: 收集安装包与签名件
+        run: |
+          mkdir -p bundle-out updater-out
+          base="src-tauri/target/${{ matrix.target }}/release/bundle"
+          if [ ! -d "$base" ]; then base="src-tauri/target/release/bundle"; fi
+          # 给人下载的安装包；macOS 的 .app.tar.gz 同时是更新器要下载的资产，必须一起传
+          find "$base" \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*-setup.exe' -o -name '*.msi' \) \
+            -exec cp {} bundle-out/ \;
+          # .sig 签名件：合并 latest.json 的原料
+          find "$base" -name '*.sig' -exec cp {} updater-out/ \;
+          echo "--- bundle-out ---"; ls -l bundle-out;
+          echo "--- updater-out ---"; ls -l updater-out;
+
+      - name: 上传安装包 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.target }}
+          path: bundle-out
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传签名件 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-${{ matrix.target }}
+          path: updater-out
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: 创建 Release 与 latest.json
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 读 annotated tag 的完整说明做 Release 正文
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 下载全部安装包
+        uses: actions/download-artifact@v4
+        with:
+          pattern: app-*
+          path: release-assets
+          merge-multiple: true
+
+      # 保持 updater-<target> 目录结构：合并脚本按目录名识别平台
+      - name: 下载全部签名件
+        uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          path: updater-inputs
+
+      - name: 提取 tag 说明为 Release 正文
+        run: |
+          git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' > RELEASE_BODY.md
+          # 轻量 tag / 空说明的兜底
+          if [ ! -s RELEASE_BODY.md ]; then
+            echo "Release ${GITHUB_REF_NAME}" > RELEASE_BODY.md
+          fi
+
+      - name: 合并各平台签名为 latest.json
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node scripts/merge-updater-manifests.mjs \
+            --inputs updater-inputs \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "$version" \
+            --notes-file RELEASE_BODY.md \
+            --out latest.json
+          cat latest.json
+
+      - name: 上传发布产物为 workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: |
+            release-assets
+            latest.json
+          retention-days: 14
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 用仓库自带 GITHUB_TOKEN；名字与正文取自 tag
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_BODY.md
+          files: |
+            release-assets/*
+            latest.json
+          fail_on_unmatched_files: true
