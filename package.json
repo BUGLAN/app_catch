@@ -6,7 +6,7 @@
   "packageManager": "pnpm@11.21.0",
   "description": "app_catch 前端（React + TypeScript + Vite）",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev-server.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
