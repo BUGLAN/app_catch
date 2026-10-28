@@ -1,10 +1,11 @@
 /**
  * 左侧抽屉：折叠 / 展开 + 拖拽调宽。
  *
- * 结构（三段式，与需求一致）：
- *   ┌ rail-head   标题 + 计数 + 折叠按钮
- *   ├ rail-scroll 应用列表（滚动区）
+ * 结构：
+ *   ┌ rail-scroll 应用列表（滚动区，紧贴标题栏）
  *   └ rail-foot   主题 / 设置 / 宿主状态
+ *
+ * 折叠开关在标题栏（Titlebar），不再在侧栏顶部独占一行。
  *
  * 状态由 App 持有的 `useSidebar` 提供（折叠与宽度要同时影响主区骨架与
  * AppList 的 tooltip，放在这一层会逼出"回调向上传状态"，容易在渲染期做副作用）。
@@ -17,13 +18,10 @@ import { useCallback, useRef } from "react";
 import type { UseSidebarResult } from "../hooks/useSidebar";
 import { RAIL_MAX_WIDTH, RAIL_MIN_WIDTH } from "../hooks/useSidebar";
 import { nextThemeMode, type ThemeMode } from "../hooks/useTheme";
-import { IconMonitor, IconMoon, IconSettings, IconSidebarCollapse, IconSidebarExpand, IconSun } from "./ui/Icons";
+import { IconMonitor, IconMoon, IconSettings, IconSun } from "./ui/Icons";
 import { Tooltip } from "./ui/Tooltip";
 
 interface Props {
-  /** 应用总数（显示在标题旁）。 */
-  count: number;
-  loading: boolean;
   /** 侧栏状态：折叠、宽度、拖拽。 */
   rail: UseSidebarResult;
   /** 主题模式与切换。 */
@@ -36,8 +34,6 @@ interface Props {
   onOpenSettings: () => void;
   /** 设置页是否处于打开状态（高亮入口）。 */
   settingsActive?: boolean;
-  /** 窗口太窄、侧栏被 CSS 强制成图标态：此时折叠按钮无意义，置灰并说明原因。 */
-  compact?: boolean;
   /** 应用列表（由 App 传入，避免这一层依赖数据层）。 */
   children: React.ReactNode;
 }
@@ -49,15 +45,12 @@ const THEME_LABEL: Record<ThemeMode, string> = {
 };
 
 export function Sidebar({
-  count,
-  loading,
   rail,
   themeMode,
   onCycleTheme,
   hosted,
   onOpenSettings,
   settingsActive = false,
-  compact = false,
   children,
 }: Props) {
   const { collapsed, renderedWidth, resizing, toggle, setWidth, beginResize, resizeBy, endResize } = rail;
@@ -127,11 +120,6 @@ export function Sidebar({
 
   /** 下一次点击会切到哪个模式：写进 title 让用户点之前就知道结果。 */
   const nextMode = nextThemeMode(themeMode);
-  const toggleLabel = compact
-    ? "窗口太窄，侧栏已收成图标"
-    : collapsed
-      ? "展开侧栏"
-      : "收起侧栏";
   const ThemeIcon = themeMode === "system" ? IconMonitor : themeMode === "light" ? IconSun : IconMoon;
 
   return (
@@ -142,28 +130,6 @@ export function Sidebar({
       data-resizing={resizing ? "true" : "false"}
       style={{ "--rail-current-width": renderedWidth + "px" } as React.CSSProperties}
     >
-      <div className="rail-head">
-        {collapsed ? null : (
-          <span className="rail-caption">
-            <span className="rail-label">应用</span>
-            {loading ? null : <span className="rail-count">{count}</span>}
-          </span>
-        )}
-        <Tooltip label={toggleLabel} enabled={collapsed}>
-          <button
-            type="button"
-            className="rail-toggle"
-            onClick={toggle}
-            aria-label={toggleLabel}
-            aria-expanded={!collapsed}
-            title={toggleLabel}
-            disabled={compact}
-          >
-            {collapsed ? <IconSidebarExpand size={15} /> : <IconSidebarCollapse size={15} />}
-          </button>
-        </Tooltip>
-      </div>
-
       <div className="rail-scroll">{children}</div>
 
       <div className="rail-foot">

@@ -106,8 +106,7 @@ code,
 .badge,
 .count,
 .log-time,
-.log-stream,
-.rail-count {
+.log-stream {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
 }

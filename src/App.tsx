@@ -369,6 +369,27 @@ export default function App() {
 
   const closeDialog = useCallback(() => setDeleteTarget(null), []);
 
+  /*
+   * ⌘N（macOS）/ Ctrl+N（Windows / Linux）新建应用：标题栏的 + 只剩图标，快捷键补上可发现性之外的效率。
+   * 弹窗打开时不响应（焦点被困在弹窗里，新建会把它藏到背后）；带 Shift / Alt 的组合留给系统。
+   */
+  useEffect(() => {
+    const isMac = document.documentElement.dataset.platform === "macos";
+    const onKeyDown = (event: KeyboardEvent) => {
+      const primary = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+      if (!primary || event.shiftKey || event.altKey || event.key.toLowerCase() !== "n") {
+        return;
+      }
+      if (deleteTarget || busy) {
+        return;
+      }
+      event.preventDefault();
+      openForm(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, deleteTarget, openForm]);
+
   /** 删除确认弹窗的存在态：关闭后再保留一拍，让退场动画播完。 */
   const dialogPresence = usePresence(deleteTarget);
 
@@ -520,20 +541,20 @@ export default function App() {
         matchCount={query.trim().length > 0 ? visibleApps.length : null}
         onNewApp={() => openForm(null)}
         busy={busy}
+        sidebarCollapsed={rail.collapsed}
+        onToggleSidebar={rail.toggle}
+        sidebarForced={windowNarrow}
         onWindowError={(error) => pushToast(error.message)}
       />
 
       <div className="body">
         <Sidebar
-          count={apps.length}
-          loading={loading}
           rail={rail}
           themeMode={theme.mode}
           onCycleTheme={theme.cycle}
           hosted={hosted}
           onOpenSettings={openSettings}
           settingsActive={settingsOpen}
-          compact={compactRail && !rail.collapsed}
         >
           {railContent}
         </Sidebar>

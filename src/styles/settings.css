@@ -5,8 +5,9 @@
  * styleContract.test.ts 会静态扫描本文件，不允许出现裸色值。
  */
 
+/* 与详情 / 表单共用 .main-inner 的居中内容列，不再单独限宽 */
 .settings-panel {
-  max-width: 720px;
+  width: 100%;
 }
 
 /* 更新状态区：一行状态 + 进度条 + 说明 + 开关 */

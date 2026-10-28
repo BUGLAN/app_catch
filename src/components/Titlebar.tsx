@@ -1,8 +1,15 @@
 /**
  * 自绘标题栏（应用内 Header）。
  *
- * 布局（对应需求里的建议结构）：
- *   左侧 Logo + 应用名  →  中间全局搜索  →  右侧业务操作  →  窗口控制
+ * 布局：
+ *   Logo + 应用名 → 侧栏开关 → 全局搜索 → （可拖拽留白） → 新建（+） → 窗口控制
+ *
+ * 侧栏开关放在这里而不是侧栏顶部：原来它在侧栏里独占一行，只为一个 15px 图标让整列下移 38px。
+ * 紧跟应用名，读起来是"这个应用的侧栏"；logo 在两个平台上都保持第一位。
+ *
+ * 新建用图标按钮（+）而不是带字的主色按钮：新建是低频操作，
+ * 不该成为全界面最醒目的色块、抢走详情页「启动」的视觉重心。名称由 aria-label / title 提供，
+ * 快捷键 ⌘N / Ctrl+N 由 App 统一监听。
  *
  * 拖拽：
  *   `data-tauri-drag-region="deep"` 让整条 Header（含子元素）都能拖动窗口。
@@ -20,8 +27,16 @@
  *   标题栏右侧留给"业务操作 + 窗口控制"，主题属于偏好设置，
  *   与"设置"相邻更符合心智，也避免同一个人在两处找同一个开关。
  */
+import { detectPlatform } from "../lib/platform";
 import type { CommandError } from "../lib/types";
-import { BrandMark, IconClose, IconPlus, IconSearch } from "./ui/Icons";
+import {
+  BrandMark,
+  IconClose,
+  IconPlus,
+  IconSearch,
+  IconSidebarCollapse,
+  IconSidebarExpand,
+} from "./ui/Icons";
 import { WindowControls } from "./WindowControls";
 
 interface Props {
@@ -32,12 +47,35 @@ interface Props {
   matchCount: number | null;
   onNewApp: () => void;
   busy: boolean;
+  /** 侧栏是否折叠（决定开关的图标与文案）。 */
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
+  /** 窗口太窄、侧栏被 CSS 强制成图标态：开关此时无意义，置灰并说明原因。 */
+  sidebarForced?: boolean;
   /** 窗口操作失败时的 toast 回调。 */
   onWindowError?: (error: CommandError) => void;
 }
 
-export function Titlebar({ query, onQueryChange, matchCount, onNewApp, busy, onWindowError }: Props) {
+/** 新建应用的快捷键文案：与 App 里的监听保持一致。 */
+export const NEW_APP_SHORTCUT = detectPlatform() === "macos" ? "⌘N" : "Ctrl+N";
+
+export function Titlebar({
+  query,
+  onQueryChange,
+  matchCount,
+  onNewApp,
+  busy,
+  sidebarCollapsed,
+  onToggleSidebar,
+  sidebarForced = false,
+  onWindowError,
+}: Props) {
   const searching = query.trim().length > 0;
+  const toggleLabel = sidebarForced
+    ? "窗口太窄，侧栏已收成图标"
+    : sidebarCollapsed
+      ? "展开侧栏"
+      : "收起侧栏";
 
   return (
     <header className="titlebar" aria-label="应用标题栏" data-tauri-drag-region="deep">
@@ -45,11 +83,24 @@ export function Titlebar({ query, onQueryChange, matchCount, onNewApp, busy, onW
         <span className="titlebar-mark" aria-hidden="true">
           <BrandMark size={22} />
         </span>
-        <span className="titlebar-wordmark">
-          <span className="titlebar-name">app_catch</span>
-          <span className="titlebar-sub">开发者向应用启动器</span>
-        </span>
+        <span className="titlebar-name">app_catch</span>
       </div>
+
+      <button
+        type="button"
+        className="titlebar-button rail-toggle"
+        onClick={onToggleSidebar}
+        aria-label={toggleLabel}
+        aria-expanded={!sidebarCollapsed}
+        title={toggleLabel}
+        disabled={sidebarForced}
+      >
+        {sidebarCollapsed || sidebarForced ? (
+          <IconSidebarExpand size={16} />
+        ) : (
+          <IconSidebarCollapse size={16} />
+        )}
+      </button>
 
       {/*
         搜索框位于拖拽区内：显式 data-tauri-drag-region="false"
@@ -96,13 +147,14 @@ export function Titlebar({ query, onQueryChange, matchCount, onNewApp, busy, onW
       <div className="titlebar-actions">
         <button
           type="button"
-          className="btn btn-primary btn-sm titlebar-new"
+          className="titlebar-button titlebar-new"
           onClick={onNewApp}
           disabled={busy}
           aria-label="新建应用"
+          aria-keyshortcuts={NEW_APP_SHORTCUT === "⌘N" ? "Meta+N" : "Control+N"}
+          title={`新建应用（${NEW_APP_SHORTCUT}）`}
         >
-          <IconPlus size={13} />
-          <span className="titlebar-new-label">新建应用</span>
+          <IconPlus size={16} />
         </button>
       </div>
 

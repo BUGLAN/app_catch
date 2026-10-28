@@ -21,6 +21,7 @@ import type { AppConfig, SessionSnapshot } from "../lib/types";
 import { runStateLabel } from "../lib/logModel";
 import type { RunState } from "../lib/types";
 import { AppIcon } from "./AppIcon";
+import { NEW_APP_SHORTCUT } from "./Titlebar";
 import { IconPlay } from "./ui/Icons";
 import { ListSkeleton } from "./ui/Primitives";
 import { Tooltip } from "./ui/Tooltip";
@@ -96,7 +97,7 @@ export function AppList({
   if (apps.length === 0) {
     return (
       <p className="rail-hint">
-        {collapsed ? "暂无应用" : "暂无应用，点右上角「新建应用」录入第一个。"}
+        {collapsed ? "暂无应用" : `暂无应用，点右上角 + 或按 ${NEW_APP_SHORTCUT} 新建。`}
       </p>
     );
   }
