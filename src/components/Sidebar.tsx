@@ -5,7 +5,8 @@
  *   ┌ rail-scroll 应用列表（滚动区，紧贴标题栏）
  *   └ rail-foot   主题 / 设置 / 宿主状态
  *
- * 折叠开关在标题栏（Titlebar），不再在侧栏顶部独占一行。
+ * 折叠不设按钮：把右边缘热区往左拖过吸附阈值即收成图标态，往回拖即展开；
+ * 键盘用户聚焦热区后按 Enter 也能切换（详见 useSidebar.resolveRailDrag）。
  *
  * 状态由 App 持有的 `useSidebar` 提供（折叠与宽度要同时影响主区骨架与
  * AppList 的 tooltip，放在这一层会逼出"回调向上传状态"，容易在渲染期做副作用）。

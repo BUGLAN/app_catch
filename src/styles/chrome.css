@@ -16,6 +16,7 @@
 /* ---------- 标题栏 ---------- */
 
 .titlebar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -90,12 +91,23 @@
 
 /* ---------- 标题栏内的全局搜索 ---------- */
 
+/*
+ * 搜索框在整条标题栏里水平居中。
+ *
+ * 用绝对定位而不是让它参与 flex 分配：左右两端（品牌 / 新建 + 窗口按钮）宽度不等，
+ * 靠 flex 挤出来的"居中"会整体偏左，看着就不在中间。
+ * 宽度用 clamp 跟着窗口收缩，窄窗口下不会顶到品牌或窗口按钮。
+ */
 .titlebar-search {
-  position: relative;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
   display: flex;
   align-items: center;
-  flex: 0 1 320px;
-  min-width: 132px;
+  width: clamp(160px, 34vw, 360px);
+  height: 26px;
+  transform: translate(-50%, -50%);
   -webkit-app-region: no-drag;
 }
 
@@ -225,25 +237,9 @@
   cursor: not-allowed;
 }
 
-/*
- * 侧栏开关：紧跟应用名，与名称之间留一点距离，读作"这个应用的侧栏"而不是名称的一部分。
- * 新建（+）：与开关同一套图标按钮语言，只在 hover 时出现底色。
- */
-.titlebar .rail-toggle {
-  margin-left: var(--space-1);
+/* 新建（+）：只在 hover 时出现底色，不抢主区的视觉重心 */
+.titlebar-new {
   -webkit-app-region: no-drag;
-}
-
-/* 禁用态（窗口太窄、侧栏已强制成图标）：仍在原位但不可点 */
-.rail-toggle:disabled {
-  color: var(--text-disabled);
-  cursor: not-allowed;
-}
-
-/* 主题切换：三态里当前项高亮 */
-.titlebar-button[aria-pressed="true"] {
-  background: var(--accent-soft);
-  color: var(--accent-text);
 }
 
 /* ---------- 窗口控制按钮 ---------- */

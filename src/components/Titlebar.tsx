@@ -2,10 +2,11 @@
  * 自绘标题栏（应用内 Header）。
  *
  * 布局：
- *   Logo + 应用名 → 侧栏开关 → 全局搜索 → （可拖拽留白） → 新建（+） → 窗口控制
+ *   Logo + 应用名 → 全局搜索 → （可拖拽留白） → 新建（+） → 窗口控制
  *
- * 侧栏开关放在这里而不是侧栏顶部：原来它在侧栏里独占一行，只为一个 15px 图标让整列下移 38px。
- * 紧跟应用名，读起来是"这个应用的侧栏"；logo 在两个平台上都保持第一位。
+ * 折叠侧栏没有按钮：宽度可以直接用右边缘热区拖出来，拖窄到阈值以下即吸附为图标态
+ * （见 useSidebar.resolveRailDrag）。标题栏里再放一个开关，等于给同一个动作
+ * 开两个入口，还让「logo + 名称」后面多挂一个与搜索框抢位置的方形图标。
  *
  * 新建用图标按钮（+）而不是带字的主色按钮：新建是低频操作，
  * 不该成为全界面最醒目的色块、抢走详情页「启动」的视觉重心。名称由 aria-label / title 提供，
@@ -29,14 +30,7 @@
  */
 import { detectPlatform } from "../lib/platform";
 import type { CommandError } from "../lib/types";
-import {
-  BrandMark,
-  IconClose,
-  IconPlus,
-  IconSearch,
-  IconSidebarCollapse,
-  IconSidebarExpand,
-} from "./ui/Icons";
+import { BrandMark, IconClose, IconPlus, IconSearch } from "./ui/Icons";
 import { WindowControls } from "./WindowControls";
 
 interface Props {
@@ -47,11 +41,6 @@ interface Props {
   matchCount: number | null;
   onNewApp: () => void;
   busy: boolean;
-  /** 侧栏是否折叠（决定开关的图标与文案）。 */
-  sidebarCollapsed: boolean;
-  onToggleSidebar: () => void;
-  /** 窗口太窄、侧栏被 CSS 强制成图标态：开关此时无意义，置灰并说明原因。 */
-  sidebarForced?: boolean;
   /** 窗口操作失败时的 toast 回调。 */
   onWindowError?: (error: CommandError) => void;
 }
@@ -65,17 +54,9 @@ export function Titlebar({
   matchCount,
   onNewApp,
   busy,
-  sidebarCollapsed,
-  onToggleSidebar,
-  sidebarForced = false,
   onWindowError,
 }: Props) {
   const searching = query.trim().length > 0;
-  const toggleLabel = sidebarForced
-    ? "窗口太窄，侧栏已收成图标"
-    : sidebarCollapsed
-      ? "展开侧栏"
-      : "收起侧栏";
 
   return (
     <header className="titlebar" aria-label="应用标题栏" data-tauri-drag-region="deep">
@@ -85,22 +66,6 @@ export function Titlebar({
         </span>
         <span className="titlebar-name">app_catch</span>
       </div>
-
-      <button
-        type="button"
-        className="titlebar-button rail-toggle"
-        onClick={onToggleSidebar}
-        aria-label={toggleLabel}
-        aria-expanded={!sidebarCollapsed}
-        title={toggleLabel}
-        disabled={sidebarForced}
-      >
-        {sidebarCollapsed || sidebarForced ? (
-          <IconSidebarExpand size={16} />
-        ) : (
-          <IconSidebarCollapse size={16} />
-        )}
-      </button>
 
       {/*
         搜索框位于拖拽区内：显式 data-tauri-drag-region="false"

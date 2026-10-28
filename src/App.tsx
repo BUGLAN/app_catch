@@ -541,9 +541,6 @@ export default function App() {
         matchCount={query.trim().length > 0 ? visibleApps.length : null}
         onNewApp={() => openForm(null)}
         busy={busy}
-        sidebarCollapsed={rail.collapsed}
-        onToggleSidebar={rail.toggle}
-        sidebarForced={windowNarrow}
         onWindowError={(error) => pushToast(error.message)}
       />
 

@@ -152,28 +152,6 @@ export function IconSearch({ size = 16, className }: IconProps) {
   );
 }
 
-/** 收起抽屉（面板 + 左向箭头）。 */
-export function IconSidebarCollapse({ size = 16, className }: IconProps) {
-  return (
-    <svg {...svgProps(size, className)}>
-      <rect x="2.2" y="3" width="11.6" height="10" rx="1.8" />
-      <path d="M6.4 3v10" />
-      <path d="M11.2 6.4 9.4 8l1.8 1.6" />
-    </svg>
-  );
-}
-
-/** 展开抽屉。 */
-export function IconSidebarExpand({ size = 16, className }: IconProps) {
-  return (
-    <svg {...svgProps(size, className)}>
-      <rect x="2.2" y="3" width="11.6" height="10" rx="1.8" />
-      <path d="M6.4 3v10" />
-      <path d="M9.4 6.4 11.2 8l-1.8 1.6" />
-    </svg>
-  );
-}
-
 /** 浅色（太阳）。 */
 export function IconSun({ size = 16, className }: IconProps) {
   return (
