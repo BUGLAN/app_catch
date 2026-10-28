@@ -26,7 +26,12 @@ chrome --headless=new --screenshot=logo/icon/app-icon-1024.png \
        "file:///<abs>/logo/icon/app-icon-master.svg"
 # 2. 生成 Tauri 全套（ico / icns / Windows Square / android / ios）
 npx tauri icon logo/icon/app-icon-1024.png
+# 3. macOS 的 icns 单独用"macOS 图标网格"版覆盖：
+#    1024 画布里主体 824px、四周留白 + 投影；全幅图在程序坞里会比别的应用大一圈。
+npx tauri icon <macOS 网格版 1024 PNG> -o /tmp/mac-icons && cp /tmp/mac-icons/icon.icns src-tauri/icons/icon.icns
 ```
+
+PNG 母版（全幅版与 macOS 网格版）可以用 PIL 直接按 SVG 的几何渲染，不依赖 Chrome。
 
 ## 三处会同时被看到的地方
 
@@ -48,14 +53,17 @@ npx tauri icon logo/icon/app-icon-1024.png
 而实际含义是"这里应该有个图标，但没抓到"。
 
 所以它保留四宫格的通用占位语义，只是配色对齐 `tokens.css`
-（原来是 Tauri 默认蓝 `#5b8def`，现在用 `--surface-elevated` + `--accent`）。
+（石墨灰 `#3a3a3c` 底 + 浅灰 `#c7c7cc` 四宫格，刻意不用品牌的白杠，避免被误读成 app_catch 自己）。
 
 ## 颜色
 
-| token | 深色主题 | 浅色主题 |
-| --- | --- | --- |
-| `--accent`（方块底） | `#5b5ce0` | `#4b56d2` |
-| `--text-on-accent`（杠） | `#ffffff` | `#ffffff` |
+石墨灰 + 白杠，与界面的中性灰阶一致（原靛紫 `#5b5ce0` 已弃用：与系统蓝的交互色冲突，观感也偏"AI 产品"）。
 
-标题栏徽标走 token，所以深浅切换自动跟随；
-应用图标本身是静态 PNG，固定用深色主题那组值（任务栏以深色为主）。
+| 位置 | 底 | 杠 |
+| --- | --- | --- |
+| 应用图标（`app-icon-master.svg` / 全套 PNG） | 竖向渐变 `#4a4a4e → #222224` + 顶部 1px 高光 | `#f5f5f7` |
+| 标题栏徽标 `<BrandMark />` | `--brand-bg`（= `--text-primary`，随主题反相） | `--brand-fg` |
+| 浏览器 favicon | `#3a3a3c`（16px 下渐变不可见，用实色） | `#ffffff` |
+
+标题栏徽标走 token，深浅切换自动反相（深色主题下是白底黑杠）；
+应用图标本身是静态 PNG，固定用石墨灰那组值。
