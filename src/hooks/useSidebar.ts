@@ -13,13 +13,36 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { readJson, writeJson, STORAGE_KEYS } from "../lib/preferences";
 
-/** 宽度约束（与 tokens.css 的 --rail-min-width / --rail-max-width 保持一致）。 */
-export const RAIL_MIN_WIDTH = 56;
+/**
+ * 展开态宽度约束（与 tokens.css 的 --rail-min-width / --rail-max-width 保持一致）。
+ *
+ * 展开态下限必须放得下"图标 + 名称 + 标签"：早期下限是 56，
+ * 用户能把展开态拖到 ~128px，结果出现"主."、提示文字一字一行的半残状态。
+ * 现在展开态只有 [184, 320] 一段，更窄就是折叠态（56），中间不存在可停留的宽度。
+ */
+export const RAIL_MIN_WIDTH = 184;
 export const RAIL_MAX_WIDTH = 320;
 /** 展开态默认宽度。 */
 export const RAIL_DEFAULT_WIDTH = 220;
 /** 折叠态宽度（只放图标）。 */
 export const RAIL_COLLAPSED_WIDTH = 56;
+/** 拖拽吸附阈值：拖到比它窄就收成图标条，否则至少展开到 RAIL_MIN_WIDTH。 */
+export const RAIL_SNAP_WIDTH = Math.round((RAIL_COLLAPSED_WIDTH + RAIL_MIN_WIDTH) / 2);
+
+/**
+ * 拖拽到某个原始宽度时应得的状态（纯函数，可单测）。
+ *
+ * 折叠时保留上一次的展开宽度不动，这样再拖出来 / 点展开都回到用户习惯的宽度。
+ */
+export function resolveRailDrag(
+  rawWidth: number,
+  lastWidth: number
+): { collapsed: boolean; width: number } {
+  if (Number.isFinite(rawWidth) && rawWidth < RAIL_SNAP_WIDTH) {
+    return { collapsed: true, width: clampRailWidth(lastWidth) };
+  }
+  return { collapsed: false, width: clampRailWidth(rawWidth) };
+}
 
 /** 把任意输入夹到合法区间并取整；NaN 退回默认值。 */
 export function clampRailWidth(value: number): number {
@@ -86,29 +109,23 @@ export function useSidebar(): UseSidebarResult {
   /** 拖拽起点宽度：必须在按下那一刻取，之后 deltaX 累加才有稳定基准。 */
   const startWidth = useRef(RAIL_DEFAULT_WIDTH);
 
+  /** 最近一次展开态宽度：拖到折叠时不覆盖它。 */
+  const lastWidth = useRef(width);
+  lastWidth.current = width;
+
   const beginResize = useCallback(() => {
+    // 基准取"当前看到的宽度"：折叠态从 56 起拖，向右拖过阈值即展开
+    startWidth.current = collapsed ? RAIL_COLLAPSED_WIDTH : width;
     setResizing(true);
-    // 折叠态下拖拽右边缘 = 想展开：先把宽度锚到折叠宽度，拖动即可自然展开
-    if (collapsed) {
-      setCollapsed(false);
-      setWidthState((current) => Math.max(current, RAIL_MIN_WIDTH));
-    }
-  }, [collapsed]);
+  }, [collapsed, width]);
 
   const resizeBy = useCallback((deltaX: number) => {
-    setWidthState(clampRailWidth(startWidth.current + deltaX));
+    const next = resolveRailDrag(startWidth.current + deltaX, lastWidth.current);
+    setCollapsed(next.collapsed);
+    setWidthState(next.width);
   }, []);
 
   const endResize = useCallback(() => setResizing(false), []);
-
-  // 每次开始拖拽都重新锚定基准宽度
-  useEffect(() => {
-    if (resizing) {
-      startWidth.current = width;
-    }
-    // 只在进入拖拽时锚定一次；拖拽中的 width 变化不应重置基准
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resizing]);
 
   return {
     collapsed,

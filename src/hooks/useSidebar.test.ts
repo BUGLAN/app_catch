@@ -12,19 +12,21 @@ import {
   RAIL_DEFAULT_WIDTH,
   RAIL_MAX_WIDTH,
   RAIL_MIN_WIDTH,
+  RAIL_SNAP_WIDTH,
+  resolveRailDrag,
 } from "./useSidebar";
 
 describe("clampRailWidth", () => {
   it("保留合法宽度（取整）", () => {
-    expect(clampRailWidth(180)).toBe(180);
-    expect(clampRailWidth(180.4)).toBe(180);
-    expect(clampRailWidth(180.6)).toBe(181);
+    expect(clampRailWidth(200)).toBe(200);
+    expect(clampRailWidth(200.4)).toBe(200);
+    expect(clampRailWidth(200.6)).toBe(201);
   });
 
-  it("夹到 [56, 320]", () => {
+  it("夹到 [184, 320]", () => {
     expect(clampRailWidth(0)).toBe(RAIL_MIN_WIDTH);
     expect(clampRailWidth(-200)).toBe(RAIL_MIN_WIDTH);
-    expect(clampRailWidth(55.9)).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth(128)).toBe(RAIL_MIN_WIDTH);
     expect(clampRailWidth(321)).toBe(RAIL_MAX_WIDTH);
     expect(clampRailWidth(9999)).toBe(RAIL_MAX_WIDTH);
   });
@@ -44,7 +46,24 @@ describe("clampRailWidth", () => {
     expect(RAIL_DEFAULT_WIDTH).toBeGreaterThanOrEqual(RAIL_MIN_WIDTH);
     expect(RAIL_DEFAULT_WIDTH).toBeLessThanOrEqual(RAIL_MAX_WIDTH);
     expect(RAIL_COLLAPSED_WIDTH).toBe(56);
-    // 折叠宽度必须等于最小宽度，否则"折叠"和"拖到最窄"会得到两个不同结果
-    expect(RAIL_COLLAPSED_WIDTH).toBe(RAIL_MIN_WIDTH);
+    // 展开态下限必须明显宽于折叠态，否则会出现文字被挤成一字一行的半折叠态
+    expect(RAIL_MIN_WIDTH).toBeGreaterThan(RAIL_COLLAPSED_WIDTH * 3);
+  });
+});
+
+describe("resolveRailDrag", () => {
+  it("拖到阈值以下吸附为折叠，并保留上次的展开宽度", () => {
+    expect(resolveRailDrag(RAIL_SNAP_WIDTH - 1, 240)).toEqual({ collapsed: true, width: 240 });
+    expect(resolveRailDrag(0, 240)).toEqual({ collapsed: true, width: 240 });
+  });
+
+  it("阈值与下限之间展开到下限，不允许半折叠宽度", () => {
+    expect(resolveRailDrag(RAIL_SNAP_WIDTH, 240)).toEqual({ collapsed: false, width: RAIL_MIN_WIDTH });
+    expect(resolveRailDrag(128, 240)).toEqual({ collapsed: false, width: RAIL_MIN_WIDTH });
+  });
+
+  it("正常区间原样取整", () => {
+    expect(resolveRailDrag(250.4, 220)).toEqual({ collapsed: false, width: 250 });
+    expect(resolveRailDrag(999, 220)).toEqual({ collapsed: false, width: RAIL_MAX_WIDTH });
   });
 });
