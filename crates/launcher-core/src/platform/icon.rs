@@ -277,6 +277,85 @@ pub fn looks_like_png(bytes: &[u8]) -> bool {
     bytes.len() >= PNG_MAGIC.len() && bytes[..PNG_MAGIC.len()] == PNG_MAGIC
 }
 
+/// `.icns` 里内嵌 PNG 的条目类型，按"解码后最合适"的顺序排列。
+///
+/// 缓存规格不超过 [`ICON_MAX_SIZE`]，所以优先 512 / 256 这两档：
+/// 1024（ic10）解码要多花 4 倍内存与时间，最后还是会被缩小。
+const ICNS_PNG_PREFERENCE: [&[u8; 4]; 8] =
+    [b"ic09", b"ic14", b"ic08", b"ic13", b"ic10", b"ic07", b"ic12", b"ic11"];
+
+/// 从 macOS `.icns` 字节里取一张 PNG 编码的图（纯函数，任意平台可单测）。
+///
+/// 格式：`"icns"` + 总长（u32 大端），随后是若干 `类型(4) + 长度(u32 大端，含 8 字节头) + 数据`。
+/// 现代 icns 的大尺寸条目直接内嵌 PNG；早年的 RLE（`it32`）与 JPEG 2000 条目不支持，
+/// 遇到只有这些条目的老图标返回 `None`，交给调用方走下一档。
+pub fn decode_icns(bytes: &[u8]) -> Option<RgbaImage> {
+    if bytes.len() < 8 || &bytes[..4] != b"icns" {
+        return None;
+    }
+    let declared = u32::from_be_bytes(bytes[4..8].try_into().ok()?) as usize;
+    let end = declared.min(bytes.len());
+    let mut entries: Vec<([u8; 4], &[u8])> = Vec::new();
+    let mut offset = 8;
+    while offset + 8 <= end {
+        let kind: [u8; 4] = bytes[offset..offset + 4].try_into().ok()?;
+        let len = u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().ok()?) as usize;
+        if len < 8 || offset + len > end {
+            break;
+        }
+        entries.push((kind, &bytes[offset + 8..offset + len]));
+        offset += len;
+    }
+    ICNS_PNG_PREFERENCE.iter().find_map(|wanted| {
+        entries
+            .iter()
+            .find(|(kind, data)| kind == *wanted && looks_like_png(data))
+            .and_then(|(_, data)| decode_png(data).ok())
+    })
+}
+
+/// 从 Windows `.ico` 字节里取尺寸最大的 PNG 条目（纯函数，任意平台可单测）。
+///
+/// 现代 ico 的 256px 条目几乎都以 PNG 存放；只有 BMP 条目的老 ico 返回 `None`
+/// （Windows 上 `icon_windows` 会再交给 Shell 解析，其它平台退到下一档）。
+pub fn decode_ico(bytes: &[u8]) -> Option<RgbaImage> {
+    // ICONDIR：reserved(0) + type(1 = icon) + count
+    if bytes.len() < 6 || bytes[0..4] != [0, 0, 1, 0] {
+        return None;
+    }
+    let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+    let mut best: Option<(u32, &[u8])> = None;
+    for index in 0..count {
+        let entry = bytes.get(6 + index * 16..6 + (index + 1) * 16)?;
+        // 宽高字节为 0 表示 256
+        let width = if entry[0] == 0 { 256 } else { u32::from(entry[0]) };
+        let size = u32::from_le_bytes(entry[8..12].try_into().ok()?) as usize;
+        let offset = u32::from_le_bytes(entry[12..16].try_into().ok()?) as usize;
+        let Some(data) = bytes.get(offset..offset.checked_add(size)?) else {
+            continue;
+        };
+        if looks_like_png(data) && best.map_or(true, |(w, _)| width > w) {
+            best = Some((width, data));
+        }
+    }
+    decode_png(best?.1).ok()
+}
+
+/// 图片文件大小上限：图标文件不会超过这个量级，防止误配到大文件时整块读进内存。
+const MAX_IMAGE_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// 读取图片文件：按内容识别 PNG / icns / ico；其它格式返回 `None`。
+pub fn load_image_file(path: &Path) -> Option<RgbaImage> {
+    if std::fs::metadata(path).ok()?.len() > MAX_IMAGE_FILE_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if looks_like_png(&bytes) {
+        return decode_png(&bytes).ok();
+    }
+    decode_icns(&bytes).or_else(|| decode_ico(&bytes))
+}
+
 
 // ---------------------------------------------------------------------------
 // 抓取链路（来源抽象 + 缓存策略）
@@ -284,17 +363,22 @@ pub fn looks_like_png(bytes: &[u8]) -> bool {
 
 /// 图标来源的「档位」——决定这张图可信到什么程度，进而决定它能不能覆盖已有缓存。
 ///
-/// 顺序即优先级：`Custom > Window > Exe`。
+/// 顺序即优先级：`Custom > Window > Project > Exe`。
 /// 缓存里记录档位的意义是**只许升级、不许降级**：
 /// 窗口档位抓到的真图标，绝不能被下一次「exe 档位」的通用图标覆盖掉。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IconTier {
     /// 从 exe 资源或 Shell 抠到的图标。开发态下往往是解释器/脚本的通用图标，可信度最低。
     Exe = 1,
-    /// 从运行中窗口的 `WM_GETICON` / 窗口类图标抓到的图标。应用自己设置的，可信度高。
-    Window = 2,
+    /// 从项目目录里的打包配置 / 常见图标文件找到的图标（见 [`crate::platform::project_icon`]）。
+    ///
+    /// 比 exe 可信：开发态的 exe 是 node / Electron 本身，项目里的 `build/icon.icns` 才是这个应用的图标；
+    /// 比窗口低：运行中窗口上的图标是应用此刻真正在用的。
+    Project = 2,
+    /// 从运行中窗口的 `WM_GETICON` / 窗口类图标、或 macOS 运行中进程所在 .app 抓到的图标。可信度高。
+    Window = 3,
     /// 用户在配置里显式指定的图标。始终优先，且永不被自动抓取覆盖。
-    Custom = 3,
+    Custom = 4,
 }
 
 impl IconTier {
@@ -302,6 +386,7 @@ impl IconTier {
     pub const fn tag(self) -> &'static str {
         match self {
             Self::Exe => "exe",
+            Self::Project => "project",
             Self::Window => "window",
             Self::Custom => "custom",
         }
@@ -311,6 +396,7 @@ impl IconTier {
     pub fn from_tag(raw: &str) -> Option<Self> {
         match raw.trim() {
             "exe" => Some(Self::Exe),
+            "project" => Some(Self::Project),
             "window" => Some(Self::Window),
             "custom" => Some(Self::Custom),
             _ => None,
@@ -392,8 +478,11 @@ pub fn resolve_and_cache(
 
     let state = cache_state(&cache, target.executable.as_deref());
     let cached_tier = read_tier(&tier_file);
-    // 只有带 pid 时才可能从窗口档位拿到更好的图
-    let can_improve = target.pid.is_some();
+    // 带 pid 时可能从窗口档位拿到更好的图；
+    // 有项目目录而缓存还低于项目档位时（例如早先缓存了 Electron 的默认图标），也值得再问一次。
+    let can_improve = target.pid.is_some()
+        || (target.project_dir.is_some()
+            && cached_tier.map_or(true, |tier| tier < IconTier::Project));
 
     if state == CacheState::Ready {
         // 已经是最高档位，或本次根本没法问窗口：直接复用
@@ -669,7 +758,22 @@ pub fn resolve_executable(command: &str) -> Option<PathBuf> {
         return None;
     }
 
-    // 3) 纯命令名：按 Windows 的搜索顺序在 PATH 与两个系统目录里找
+    // 3) 纯命令名
+    resolve_bare_command(trimmed)
+}
+
+/// Unix：纯命令名按 PATH 原样查找（不补扩展名）。
+///
+/// 命中脚本（`pnpm` 的 shim、`#!/bin/sh` 包装）同样不能当图标来源，返回 `None`。
+#[cfg(not(windows))]
+fn resolve_bare_command(name: &str) -> Option<PathBuf> {
+    search_in_path(name).filter(|found| !is_script(found))
+}
+
+/// Windows：按搜索顺序在 PATH 与两个系统目录里找，必要时补 `.exe`。
+#[cfg(windows)]
+fn resolve_bare_command(trimmed: &str) -> Option<PathBuf> {
+    let path = Path::new(trimmed);
     let with_ext = if path.extension().is_some() {
         trimmed.to_string()
     } else {
@@ -703,6 +807,42 @@ fn search_in_path(file_name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod icns_tests {
+    use super::*;
+
+    /// 拼一个 icns：一个不支持的 RLE 条目 + 一个内嵌 PNG 的 ic08 条目。
+    fn icns_with(entries: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (kind, data) in entries {
+            body.extend_from_slice(*kind);
+            body.extend_from_slice(&((data.len() + 8) as u32).to_be_bytes());
+            body.extend_from_slice(data);
+        }
+        let mut out = b"icns".to_vec();
+        out.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
+        out.extend(body);
+        out
+    }
+
+    #[test]
+    fn picks_embedded_png_and_skips_legacy_entries() {
+        let png = encode_png(&RgbaImage::solid(16, 16, [1, 2, 3, 255]).expect("合法尺寸")).expect("编码失败");
+        let icns = icns_with(&[(b"it32", vec![0; 40]), (b"ic08", png)]);
+        let image = decode_icns(&icns).expect("应解出内嵌 PNG");
+        assert_eq!((image.width, image.height), (16, 16));
+    }
+
+    #[test]
+    fn rejects_non_icns_and_truncated_data() {
+        assert!(decode_icns(b"not an icns").is_none());
+        assert!(decode_icns(&icns_with(&[(b"it32", vec![0; 40])])).is_none(), "只有老格式条目时应返回 None");
+        let mut truncated = icns_with(&[(b"ic08", vec![0; 100])]);
+        truncated.truncate(60);
+        assert!(decode_icns(&truncated).is_none());
+    }
 }
 
 #[cfg(test)]
@@ -1184,6 +1324,37 @@ mod tier_tests {
         let high = load_png_file(&path2).expect("读缓存");
         assert_eq!(high.pixels[0..4], [200, 30, 40, 255], "真图标必须覆盖通用图标");
         assert_eq!(read_tier(&tier_path(&icons, &AppId::new("att").unwrap())), Some(IconTier::Window));
+    }
+
+    /// 项目档位：早先缓存了 Electron 默认图标（exe 档位），之后补上项目目录，
+    /// 即使应用没在运行（没有 pid）也必须升级成项目图标；升级后不再反复去问。
+    #[test]
+    fn project_dir_upgrades_cached_exe_tier_without_pid() {
+        let dir = tempfile::tempdir().expect("临时目录失败");
+        let icons = dir.path().join("icons");
+        let app = AppId::new("proj").expect("合法 id");
+
+        let exe_source = TierSource::new(IconTier::Exe, [10, 10, 10, 255]);
+        resolve_and_cache(&exe_source, &icons, &target("proj", None)).expect("应抓到");
+
+        let project_source = TierSource::new(IconTier::Project, [0, 120, 200, 255]);
+        let with_project = target("proj", None).with_project_dir(Some(dir.path().to_path_buf()));
+        let path = resolve_and_cache(&project_source, &icons, &with_project).expect("应抓到");
+        assert_eq!(project_source.calls(), 1, "低于项目档位的缓存必须重问一次");
+        assert_eq!(load_png_file(&path).expect("读缓存").pixels[0..4], [0, 120, 200, 255]);
+        assert_eq!(read_tier(&tier_path(&icons, &app)), Some(IconTier::Project));
+
+        resolve_and_cache(&project_source, &icons, &with_project).expect("应命中缓存");
+        assert_eq!(project_source.calls(), 1, "已是项目档位、又没有 pid：不应再问");
+    }
+
+    #[test]
+    fn tier_tags_round_trip_in_priority_order() {
+        let tiers = [IconTier::Exe, IconTier::Project, IconTier::Window, IconTier::Custom];
+        assert!(tiers.windows(2).all(|pair| pair[0] < pair[1]));
+        for tier in tiers {
+            assert_eq!(IconTier::from_tag(tier.tag()), Some(tier));
+        }
     }
 
     /// 已经是窗口档位：再有 pid 也不重复抓（避免每次打开列表都跑 Shell API）。

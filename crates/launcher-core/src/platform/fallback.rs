@@ -1,6 +1,7 @@
 //! 非 Windows 平台的兜底实现。
 //!
-//! - 图标捕获：macOS / Linux 暂无图标抓取，恒返回 `None`，由前端内置兜底图承接；
+//! - 图标捕获：只支持配置里的自定义图标与项目图标（`.png` / `.icns` / `.ico`）；macOS 有完整实现（`icon_macos`），
+//!   这里服务于 Linux 等其余平台，抓不到时由前端内置兜底图承接；
 //! - 进程后端：macOS / Linux 已由 [`super::unix`] 实现，这里的空壳只服务于既非 Windows 也非 Unix 的目标，
 //!   所有操作统一返回 [`AppCatchError::Unsupported`]，绝不 panic。
 
@@ -65,8 +66,26 @@ impl FallbackIconCapture {
     }
 }
 
+impl crate::platform::icon::IconSource for FallbackIconCapture {
+    /// 自定义图标 → 项目图标：没有平台 API 可以问窗口或可执行文件。
+    fn produce(&self, target: &IconTarget) -> Option<crate::platform::icon::CapturedIcon> {
+        use crate::platform::icon::{load_image_file, CapturedIcon, IconTier};
+        if let Some(image) = target
+            .custom_icon
+            .as_deref()
+            .and_then(load_image_file)
+            .filter(|image| !image.is_fully_transparent())
+        {
+            return Some(CapturedIcon::new(image, IconTier::Custom));
+        }
+        let image = crate::platform::project_icon::project_icon(target.project_dir.as_deref()?)?;
+        Some(CapturedIcon::new(image, IconTier::Project))
+    }
+}
+
 impl IconCapture for FallbackIconCapture {
-    fn capture(&self, _target: &IconTarget) -> Option<std::path::PathBuf> {
-        None
+    fn capture(&self, target: &IconTarget) -> Option<std::path::PathBuf> {
+        let icons_dir = crate::paths::icons_dir().ok()?;
+        crate::platform::icon::resolve_and_cache(self, &icons_dir, target)
     }
 }

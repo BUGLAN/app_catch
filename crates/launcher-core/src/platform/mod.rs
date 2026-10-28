@@ -4,7 +4,8 @@
 //! - [`ProcessBackend`]：spawn / kill_tree / attach（按 pid + 进程启动时间重关联，防 PID 复用）；
 //! - [`IconCapture`]：从可执行文件或运行中窗口尽力抓取图标；
 //! - 具体平台实现按 `cfg` 选择：Windows 见 [`windows`]，macOS / Linux 见 [`unix`]；
-//!   图标捕获在非 Windows 平台走 [`fallback`]（恒返回 `None`，由前端兜底图承接）。
+//!   图标捕获：Windows 见 [`icon_windows`]，macOS 见 [`icon_macos`]（.app 包图标），
+//!   其余平台走 [`fallback`]（只支持配置里的自定义图标）。
 //!
 //! 运行时语义（M1b）：
 //! - 所有方法都是 **async**：等待子进程与读写管道都在 tokio 运行时内进行；
@@ -27,12 +28,17 @@ use crate::session::SessionId;
 
 #[cfg(not(windows))]
 pub mod fallback;
+/// macOS 图标抓取：.app 包 → Info.plist → icns（不含 unsafe）。
+#[cfg(target_os = "macos")]
+pub mod icon_macos;
 /// Unix 进程后端：进程组杀树 + `proc_pidinfo` / `/proc` 启动时间，是允许 `unsafe` 的模块之一。
 #[cfg(unix)]
 #[allow(unsafe_code)]
 pub mod unix;
 /// 图标核心：位图规范化、PNG 编解码、缓存判定（**不含平台 API**，任何平台都能单测）。
 pub mod icon;
+/// 「项目图标」档位：从工作目录里的打包配置 / 常见路径找图标（纯文件读取，任意平台）。
+pub mod project_icon;
 /// Windows 图标抓取：窗口 HICON / exe 资源图标 -> PNG 缓存。
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -65,6 +71,8 @@ pub use windows::{descendant_pids, is_process_alive, pid_exists_in_snapshot, Win
 pub use fallback::{FallbackIconCapture, FallbackProcessBackend};
 #[cfg(unix)]
 pub use unix::UnixProcessBackend;
+#[cfg(target_os = "macos")]
+pub use icon_macos::MacIconCapture;
 
 /// 收集一个会话进程树的全部 pid（根 pid 在前，子孙在后）。
 ///
@@ -109,7 +117,10 @@ pub type PlatformProcessBackend = FallbackProcessBackend;
 #[cfg(windows)]
 pub type PlatformIconCapture = WindowsIconCapture;
 /// 当前平台默认的图标捕获实现类型。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub type PlatformIconCapture = MacIconCapture;
+/// 当前平台默认的图标捕获实现类型（Linux 等：只支持自定义图标）。
+#[cfg(not(any(windows, target_os = "macos")))]
 pub type PlatformIconCapture = FallbackIconCapture;
 
 /// 构造当前平台的默认进程后端。
@@ -315,6 +326,8 @@ pub struct IconTarget {
     pub pid: Option<u32>,
     /// 窗口标题（辅助定位目标窗口）。
     pub window_title: Option<String>,
+    /// 应用的工作目录（`AppConfig.cwd`）：「项目图标」档位在这里找打包配置与常见图标文件。
+    pub project_dir: Option<PathBuf>,
 }
 
 impl IconTarget {
@@ -352,6 +365,13 @@ impl IconTarget {
     #[must_use]
     pub fn with_executable(mut self, path: Option<PathBuf>) -> Self {
         self.executable = path;
+        self
+    }
+
+    /// 补上项目目录；空路径视为未设置（`AppConfig.cwd` 用空路径表示"继承启动器目录"）。
+    #[must_use]
+    pub fn with_project_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.project_dir = dir.filter(|d| !d.as_os_str().is_empty());
         self
     }
 }
@@ -448,6 +468,7 @@ mod tests {
                 executable: None,
                 pid: None,
                 window_title: None,
+                project_dir: None,
             }
         );
     }

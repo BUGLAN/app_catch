@@ -31,13 +31,34 @@ IconTarget::capture
   │      ├── GetClassLongPtrW(GCLP_HICON)    （窗口类注册时带的图标）
   │      └── GetClassLongPtrW(GCLP_HICONSM)
   │
-  ├── 3. exe 资源图标（不需要进程在跑）
+  ├── 3. 项目图标（不需要进程在跑；需要 AppConfig.cwd）—— platform/project_icon.rs，全平台共用
+  │      ├── electron-builder 配置的 icon（yml / json / package.json "build"，本平台段 mac/win/linux 优先）
+  │      └── 常见位置：build/icon、resources/icon、assets/icon、src-tauri/icons/icon、public/icon-512 …
+  │
+  ├── 4. exe 资源图标（不需要进程在跑）
   │      ├── PrivateExtractIconsW(256) → (48) → (32)   （可直接指定像素尺寸）
   │      ├── ExtractIconExW                              （回退：某些 .ico）
   │      └── SHGetFileInfoW(SHGFI_LARGEICON)              （回退：Shell 大图标）
   │
-  └── 4. 都没有 ──> None ──> 前端用内置默认图
+  └── 5. 都没有 ──> None ──> 前端用内置默认图
 ```
+
+档位（写在 `<app_id>.tier` 里，只升不降）：`custom > window > project > exe`。
+
+### 2.0 macOS（`platform/icon_macos.rs`）
+
+macOS 上图标属于 `.app` 包：`Contents/Info.plist` 的 `CFBundleIconFile` → `Resources/*.icns` → 取内嵌 PNG。
+
+| 档位 | 来源 |
+| --- | --- |
+| custom | 配置里的 `.png` / `.icns` / `.ico`，或直接指向一个 `.app` |
+| window | 运行中进程树里第一个位于 `.app` 内的进程（真正的 GUI 应用） |
+| project | 同上「项目图标」 |
+| exe | `node_modules` 里的 Electron / NW.js 包（开发态，排在项目图标之后），或启动命令本身位于 `.app` 内 |
+
+开发态的 Electron 应用（如 `pnpm dev:electron`）：运行中的进程是 `node_modules/electron/dist/Electron.app`，
+只能拿到 Electron 的原子图标；应用用 `app.dock.setIcon()` 设的图标其它进程读不到。
+所以这类应用靠**项目图标**档位显示正确图标——不运行也能显示。
 
 ### 2.1 为什么窗口图标优先于 exe 图标
 

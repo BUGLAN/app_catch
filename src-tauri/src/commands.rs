@@ -305,6 +305,7 @@ pub async fn get_app_icon(
     let target = launcher_core::platform::IconTarget::for_app(app.id.clone())
         .with_custom_icon(app.icon.clone())
         .with_executable(executable)
+        .with_project_dir(Some(app.cwd.clone()))
         .with_pid(pid);
 
     // 图标抓取是纯尽力而为：即使 spawn_blocking 本身失败也只是「没有图标」

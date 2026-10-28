@@ -587,7 +587,7 @@ impl WindowsIconCapture {
 }
 
 impl IconSource for WindowsIconCapture {
-    /// 按优先级链抠图：自定义图标 -> 运行中窗口 -> exe 资源。
+    /// 按优先级链抠图：自定义图标 -> 运行中窗口 -> 项目图标 -> exe 资源。
     ///
     /// 三档之间是「失败即继续」而不是「失败即放弃」：
     /// 用户填了一个已被删除的图标路径，不该连带让 exe 图标也抓不到。
@@ -614,7 +614,16 @@ impl IconSource for WindowsIconCapture {
             }
         }
 
-        // 3) exe 资源图标（脚本文件不参与：见上方说明）
+        // 3) 项目图标：开发态 exe 是 node / electron 本身，项目里打包用的图标才属于这个应用
+        if let Some(image) = target
+            .project_dir
+            .as_deref()
+            .and_then(crate::platform::project_icon::project_icon)
+        {
+            return Some(CapturedIcon::new(image, IconTier::Project));
+        }
+
+        // 4) exe 资源图标（脚本文件不参与：见上方说明）
         if let Some(exe) = target.executable.as_deref() {
             if !crate::platform::icon::is_script(exe) {
                 if let Some(image) = file_icon(exe) {
@@ -623,7 +632,7 @@ impl IconSource for WindowsIconCapture {
             }
         }
 
-        // 4) 兜底：由前端用内置默认图
+        // 5) 兜底：由前端用内置默认图
         None
     }
 }
