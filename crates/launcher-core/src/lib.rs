@@ -50,6 +50,16 @@ mod tests {
         // 与 Cargo 注入的包版本严格一致，防止后续手写版本号漂移
         assert_eq!(version(), env!("CARGO_PKG_VERSION"));
         assert_eq!(crate_name(), "launcher-core");
-        assert!(version().starts_with("0.1."), "M0 基线版本应为 0.1.x");
+
+        // 只约束形状（MAJOR.MINOR.PATCH 三段数字），不锁死具体版本。
+        // 早期这里写的是 starts_with("0.1.")：一旦发 0.2.0，CI 就会红在本行，
+        // 而它想守的其实只是「版本号是个正常的语义化版本」。
+        let parts: Vec<&str> = version().split('.').collect();
+        assert_eq!(parts.len(), 3, "版本号应为 MAJOR.MINOR.PATCH，实际 {}", version());
+        assert!(
+            parts.iter().all(|part| part.parse::<u32>().is_ok()),
+            "版本号各段应为数字，实际 {}",
+            version()
+        );
     }
 }
