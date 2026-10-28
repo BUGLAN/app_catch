@@ -101,6 +101,37 @@ describe("mergeUpdaterManifests", () => {
     );
   });
 
+  it("构建目录里混着旧版本的 .sig 时，按版本挑当前这次发布的", async () => {
+    /*
+     * 真实踩过的坑：本地重跑发布时 bundle 目录里还留着 0.1.0 的 .sig，
+     * 只按安装包类型排序会选中 "app_catch_0.1.0_x64-setup.exe"，
+     * 生成出来的 latest.json 指向旧安装包。
+     */
+    const inputs = await makeInputs({
+      "x86_64-pc-windows-msvc": [
+        "app_catch_0.1.0_x64-setup.exe.sig",
+        "app_catch_0.2.0_x64-setup.exe.sig",
+      ],
+    });
+    const manifest = await mergeUpdaterManifests({ ...BASE, inputsDir: inputs });
+    expect(manifest.platforms["windows-x86_64"].url).toBe(
+      "https://github.com/BUGLAN/app_catch/releases/download/v0.2.0/app_catch_0.2.0_x64-setup.exe"
+    );
+    expect(manifest.platforms["windows-x86_64"].signature).toBe(
+      "SIG:app_catch_0.2.0_x64-setup.exe.sig"
+    );
+  });
+
+  it("macOS 的更新包名不含版本号时照旧可用", async () => {
+    const inputs = await makeInputs({
+      "aarch64-apple-darwin": ["app_catch.app.tar.gz.sig"],
+    });
+    const manifest = await mergeUpdaterManifests({ ...BASE, inputsDir: inputs });
+    expect(manifest.platforms["darwin-aarch64"].url).toBe(
+      "https://github.com/BUGLAN/app_catch/releases/download/v0.2.0/app_catch.app.tar.gz"
+    );
+  });
+
   it("没有 updater-* 目录时给出可读错误", async () => {
     root = await mkdtemp(join(tmpdir(), "updater-manifest-"));
     await expect(mergeUpdaterManifests({ ...BASE, inputsDir: root })).rejects.toThrow(

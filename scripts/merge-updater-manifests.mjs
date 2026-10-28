@@ -85,9 +85,18 @@ export async function mergeUpdaterManifests({ inputsDir, repo, tag, version, not
       throw new Error(`${dir.name} 里没有 .sig 签名文件：更新产物签名缺失`);
     }
 
-    // 同平台多种安装包时取优先级最高的；并列时按名字排序保证可复现
-    sigs.sort((a, b) => artifactPreference(b) - artifactPreference(a) || a.localeCompare(b));
-    const chosen = sigs[0];
+    /*
+     * 先按版本筛选，再按安装包类型排序。
+     *
+     * 为什么要按版本筛：构建目录里可能同时留着旧版本的 .sig（本地重跑发布、CI 缓存、
+     * 手工把 bundle 目录拷来拷去都会这样）。只按类型排序时 "0.1.0" 会排在 "0.2.0" 前面，
+     * 于是 latest.json 指向旧安装包 —— 更新器要么下到 404，要么把旧包当新版本推给用户。
+     * macOS 的更新包名里没有版本号（app_catch.app.tar.gz.sig），筛出来是空的，回退到全集。
+     */
+    const versionMatched = sigs.filter((name) => name.includes(version));
+    const pool = versionMatched.length > 0 ? versionMatched : sigs;
+    pool.sort((a, b) => artifactPreference(b) - artifactPreference(a) || a.localeCompare(b));
+    const chosen = pool[0];
     const signature = (await readFile(join(inputsDir, dir.name, chosen), "utf8")).trim();
     if (signature.length === 0) {
       throw new Error(`${chosen} 的签名内容为空`);
