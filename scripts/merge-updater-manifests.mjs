@@ -1,6 +1,10 @@
-#!/usr/bin/env node
 /**
  * 把各平台构建产物的 .sig 签名合并成 tauri-plugin-updater 用的静态清单 latest.json。
+ *
+ * 刻意不写 `#!/usr/bin/env node`：这个文件会被 scripts/*.test.mjs 直接 import，
+ * 而 Windows 检出是 CRLF —— shebang 行尾多出的 \r 会让 Vite 的 esbuild 转换
+ * 直接抛 “Invalid or unexpected token”（只在 Windows CI 复现）。调用方一律是
+ * `node scripts/merge-updater-manifests.mjs`，shebang 本来也没有作用。
  *
  * 为什么不用 tauri-action 自动生成：我们的 Release 是矩阵构建（macOS aarch64 /
  * x86_64 + Windows x64）后统一发的，每个平台只有自己那一份签名；清单要求

@@ -1,0 +1,14 @@
+# 统一行尾：仓库里的文本文件一律 LF，Windows 检出也不做 CRLF 转换。
+#
+# 为什么需要它：CRLF 不只是风格问题 —— 带 shebang 的行会在行尾留下 \r，
+# 让 Vite/esbuild 解析模块时直接报 “Invalid or unexpected token”，
+# 表现为「本地（LF）测试通过、Windows CI（CRLF）必红」。
+* text=auto eol=lf
+
+# 二进制资产不参与行尾转换
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.lib binary
