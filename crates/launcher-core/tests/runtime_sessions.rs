@@ -5,6 +5,9 @@
 //!
 //! 注意：`APP_CATCH_HOME` 是进程级全局变量，cargo test 默认多线程并行会互相踩。
 //! 这里用一把进程内互斥锁串行化所有涉及环境变量或真实进程的测试。
+//!
+//! 仅 Windows：用例基于 `cmd /c` 与 Job Object；Unix 后端的同类覆盖见 demo_app_lifecycle.rs。
+#![cfg(windows)]
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;

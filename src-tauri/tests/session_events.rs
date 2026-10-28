@@ -98,18 +98,23 @@ async fn run_session(manager: &SessionManager, app: &AppConfig, lines: usize) ->
     dir
 }
 
-/// 用 cmd 循环打印若干行：每行带序号，便于验证顺序。
+/// 用系统 shell 打印若干行：每行带序号，便于验证顺序（Windows 用 cmd，Unix 用 sh）。
 fn echo_app(lines: usize) -> AppConfig {
+    let (program, flag, separator) = if cfg!(windows) {
+        ("cmd", "/c", " & ")
+    } else {
+        ("sh", "-c", "; ")
+    };
     let mut app = AppConfig::new(
         AppId::new("shard-demo").expect("合法 id"),
         "分片演示",
-        "cmd",
+        program,
     );
     let script = (0..lines)
         .map(|i| format!("echo line-{i:03} padding-padding-padding-padding"))
         .collect::<Vec<_>>()
-        .join(" & ");
-    app.args = vec!["/c".to_string(), script];
+        .join(separator);
+    app.args = vec![flag.to_string(), script];
     app
 }
 

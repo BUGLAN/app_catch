@@ -8,6 +8,9 @@
 //! 无 GUI 的 Session 0 / 容器里前者不成立，那是**环境限制不是代码缺陷**，
 //! 因此用「运行时探测 + 明确打印跳过原因」代替编译期忽略；
 //! 有桌面的开发机上它们会全量执行并严格断言。
+//!
+//! 仅 Windows：窗口 / exe 图标抓取走 Shell API。
+#![cfg(windows)]
 
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;

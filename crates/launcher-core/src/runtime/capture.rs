@@ -810,6 +810,8 @@ mod tests {
     /// 注意：这条测试在本次编码修复前断言「必须出现替换字符」。修正后语义变了——
     /// `0x80 0x81 0x6f` 其实是**合法 GBK**（0x80 是欧元符号，0x81 0x6f 是双字节字符），
     /// 因此现在会被无损解出并标记 `gbk`，不再出现替换字符。不丢行这条不变量保持不变。
+    // GBK 回退只在 Windows 生效（见 decode_with_platform_fallback），其它平台按 UTF-8 + lossy 处理
+    #[cfg(windows)]
     #[tokio::test]
     async fn invalid_utf8_does_not_drop_the_line() {
         let mut input: Vec<u8> = Vec::new();
@@ -842,6 +844,8 @@ mod tests {
     const GBK_ZHONGWEN_CESHI: &[u8] = &[0xD6, 0xD0, 0xCE, 0xC4, 0xB2, 0xE2, 0xCA, 0xD4];
 
     /// 回归：GBK 字节必须无损还原并标记 gbk，绝不能被替换字符吃掉。
+    // GBK 回退只在 Windows 生效（见 decode_with_platform_fallback），其它平台按 UTF-8 + lossy 处理
+    #[cfg(windows)]
     #[test]
     fn decode_line_losslessly_decodes_gbk() {
         let (text, encoding) = decode_line_lossless(GBK_ZHONGWEN_CESHI);
@@ -872,6 +876,8 @@ mod tests {
     }
 
     /// CRLF 的行尾 \r 在新解码路径下仍要被剥掉。
+    // GBK 回退只在 Windows 生效（见 decode_with_platform_fallback），其它平台按 UTF-8 + lossy 处理
+    #[cfg(windows)]
     #[test]
     fn decode_line_losslessly_strips_crlf() {
         let mut bytes = GBK_ZHONGWEN_CESHI.to_vec();
@@ -1042,6 +1048,8 @@ mod tests {
     }
 
     /// 超长行切分策略不变：切分发生在解码之前，且每段独立做编码判定。
+    // GBK 回退只在 Windows 生效（见 decode_with_platform_fallback），其它平台按 UTF-8 + lossy 处理
+    #[cfg(windows)]
     #[tokio::test]
     async fn overlong_gbk_line_is_split_before_decoding() {
         // 8 个字节 = 4 个汉字；每 4 字节切一段，正好每段 2 个汉字（都是合法 GBK）

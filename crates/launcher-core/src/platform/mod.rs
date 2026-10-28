@@ -3,7 +3,8 @@
 //! 需求基线要求「平台相关代码走抽象层，不锁死单一平台」：
 //! - [`ProcessBackend`]：spawn / kill_tree / attach（按 pid + 进程启动时间重关联，防 PID 复用）；
 //! - [`IconCapture`]：从可执行文件或运行中窗口尽力抓取图标；
-//! - 具体平台实现按 `cfg` 选择：Windows 见 [`windows`]，其它平台见 [`fallback`]。
+//! - 具体平台实现按 `cfg` 选择：Windows 见 [`windows`]，macOS / Linux 见 [`unix`]；
+//!   图标捕获在非 Windows 平台走 [`fallback`]（恒返回 `None`，由前端兜底图承接）。
 //!
 //! 运行时语义（M1b）：
 //! - 所有方法都是 **async**：等待子进程与读写管道都在 tokio 运行时内进行；
@@ -26,6 +27,10 @@ use crate::session::SessionId;
 
 #[cfg(not(windows))]
 pub mod fallback;
+/// Unix 进程后端：进程组杀树 + `proc_pidinfo` / `/proc` 启动时间，是允许 `unsafe` 的模块之一。
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub mod unix;
 /// 图标核心：位图规范化、PNG 编解码、缓存判定（**不含平台 API**，任何平台都能单测）。
 pub mod icon;
 /// Windows 图标抓取：窗口 HICON / exe 资源图标 -> PNG 缓存。
@@ -58,6 +63,8 @@ pub use window::{main_window_for_pids, window_title_for_pid, window_title_for_pi
 pub use windows::{descendant_pids, is_process_alive, pid_exists_in_snapshot, WindowsProcessBackend};
 #[cfg(not(windows))]
 pub use fallback::{FallbackIconCapture, FallbackProcessBackend};
+#[cfg(unix)]
+pub use unix::UnixProcessBackend;
 
 /// 收集一个会话进程树的全部 pid（根 pid 在前，子孙在后）。
 ///
@@ -92,7 +99,10 @@ pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[cfg(windows)]
 pub type PlatformProcessBackend = WindowsProcessBackend;
 /// 当前平台默认的进程后端类型。
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub type PlatformProcessBackend = UnixProcessBackend;
+/// 当前平台默认的进程后端类型（既非 Windows 也非 Unix：占位实现）。
+#[cfg(not(any(windows, unix)))]
 pub type PlatformProcessBackend = FallbackProcessBackend;
 
 /// 当前平台默认的图标捕获实现类型。
@@ -469,12 +479,12 @@ mod tests {
 
     /// 占位实现必须返回明确错误而不是 panic。
     ///
-    /// M1b 之后 Windows 后端已是真实实现，这条「未实现」契约由非 Windows 的 fallback 后端继续保证；
-    /// 测试本身在所有平台编译，只是运行条件随平台切换。
+    /// macOS / Linux 已有真实后端（[`unix`]），占位后端只服务于其余目标；
+    /// 这里直接构造它来守住「未实现时报 Unsupported」的契约。
     #[cfg(not(windows))]
-    #[test]
-    fn placeholder_backend_reports_unsupported() {
-        let backend = default_process_backend();
+    #[tokio::test]
+    async fn placeholder_backend_reports_unsupported() {
+        let backend = FallbackProcessBackend::new();
         let request = SpawnRequest::new(
             SessionId::new_v4(),
             AppId::new("demo").expect("合法 id"),

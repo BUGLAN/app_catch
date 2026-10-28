@@ -17,7 +17,7 @@ SessionManager（会话门面，async）
           └── WindowsProcessBackend（Job Object + 启动时间校验）
 ```
 
-`SessionManager` 只依赖 `Arc<dyn ProcessBackend>`，因此可替换实现（macOS 在 M4 接入）。
+`SessionManager` 只依赖 `Arc<dyn ProcessBackend>`，因此可替换实现：Windows 走 Job Object（`platform/windows.rs`），macOS / Linux 走进程组（`platform/unix.rs`）。
 
 ### 单 writer 所有权（轮转与保留策略成立的前提）
 
@@ -319,7 +319,12 @@ OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
 
 1. **重启后无法接管旧 stdout/stderr**：管道句柄随父进程消失，重关联只能恢复「进程是否还活着」的状态，无法继续读取输出。这些会话的日志会停在重启前的位置。
 2. **重关联后的 kill_tree 是尽力而为**：拿不到原 Job 句柄，只能靠父子关系枚举；若进程中途改变父子关系（如双 fork），可能有遗漏。
-4. **非 Windows 平台未实现**：`FallbackProcessBackend` 所有方法返回 `Unsupported`，macOS 对齐在 M4。
+4. **Unix 后端（macOS / Linux）的语义差异**（`platform/unix.rs`）：
+   - 容器是进程组（`process_group(0)`），杀树先对整组 SIGTERM、宽限 5 秒后 SIGKILL；用 `setsid` / `detached` 脱组的子孙靠杀树前的 `ps` 父子快照补发信号；
+   - 进程身份：macOS 取 `proc_pidinfo` 的启动时间（微秒），Linux 取 `/proc/<pid>/stat` 的 starttime；
+   - 启动器重启后重关联的进程不是本进程的子进程，`wait` 只能轮询到它消失，退出码记为未知；
+   - 从 Finder 启动的 .app 只有系统默认 PATH：后端构造时在后台线程读取一次用户登录 shell 的 PATH（`$SHELL -ilc`，5 秒超时），合并进子进程环境，配置里显式写 PATH 时以配置为准；
+   - 端到端覆盖见 `crates/launcher-core/tests/demo_app_lifecycle.rs`（自带小应用 `tests/fixtures/demo_app.sh`：组内 worker + 脱组孙进程 + stdout/stderr 输出）。
 
 ## 相关文档
 

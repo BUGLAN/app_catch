@@ -2,6 +2,9 @@
 //!
 //! 隔离原则与前一个集成测试一致：每个用例把 `APP_CATCH_HOME` 指向独立临时目录，
 //! 并用进程内互斥锁串行化（环境变量是进程级全局状态）。
+//!
+//! 仅 Windows：窗口标题 / 监听端口采集只在 Windows 实现。
+#![cfg(windows)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};

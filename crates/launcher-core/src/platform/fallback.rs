@@ -1,7 +1,8 @@
-//! 非 Windows 平台的占位实现（保证 `cargo check` 在任意平台全绿）。
+//! 非 Windows 平台的兜底实现。
 //!
-//! 需求基线把 macOS 对齐放在 M4，Linux 不在本期范围；这里的实现只提供可编译的空壳，
-//! 所有操作统一返回 [`AppCatchError::Unsupported`]，绝不 panic，避免误调用时让宿主进程崩溃。
+//! - 图标捕获：macOS / Linux 暂无图标抓取，恒返回 `None`，由前端内置兜底图承接；
+//! - 进程后端：macOS / Linux 已由 [`super::unix`] 实现，这里的空壳只服务于既非 Windows 也非 Unix 的目标，
+//!   所有操作统一返回 [`AppCatchError::Unsupported`]，绝不 panic。
 
 use crate::error::{AppCatchError, Result};
 use crate::platform::{

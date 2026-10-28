@@ -25,6 +25,10 @@ png = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
 
+# Unix 运行时后端：killpg 杀进程组、proc_pidinfo 读启动时间（Cargo.lock 已有，经 tokio/mio 引入）
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 
