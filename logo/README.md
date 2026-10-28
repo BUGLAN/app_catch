@@ -24,14 +24,43 @@
 chrome --headless=new --screenshot=logo/icon/app-icon-1024.png \
        --window-size=1024,1024 --default-background-color=00000000 \
        "file:///<abs>/logo/icon/app-icon-master.svg"
-# 2. 生成 Tauri 全套（ico / icns / Windows Square / android / ios）
+# 2. 生成 Tauri 全套（icns / Windows Square / android / ios）
 npx tauri icon logo/icon/app-icon-1024.png
-# 3. macOS 的 icns 单独用"macOS 图标网格"版覆盖：
+# 3. **重新生成 Windows 的 icon.ico**（见下，第 2 步产出的 ico 不能用）
+node scripts/build-app-icon.mjs
+# 4. macOS 的 icns 单独用"macOS 图标网格"版覆盖：
 #    1024 画布里主体 824px、四周留白 + 投影；全幅图在程序坞里会比别的应用大一圈。
 npx tauri icon <macOS 网格版 1024 PNG> -o /tmp/mac-icons && cp /tmp/mac-icons/icon.icns src-tauri/icons/icon.icns
 ```
 
+顺序不能反：第 2 步会把 `icon.ico` 覆盖成"一张 1024 缩小到底"的版本，第 3 步必须在其后跑。
+
 PNG 母版（全幅版与 macOS 网格版）可以用 PIL 直接按 SVG 的几何渲染，不依赖 Chrome。
+
+### Windows 的 icon.ico 为什么单独生成
+
+`npx tauri icon` 只吃一张 1024 PNG，再把它重采样到 16/24/32/48/64/256，有两个问题：
+
+| 问题 | 后果 | `scripts/build-app-icon.mjs` 的做法 |
+| --- | --- | --- |
+| 16px 也走三杠母版 | 三条横杠在这个尺寸糊成一片 | 16/20 改用两杠小母版，其余用三杠母版 |
+| 每帧都是 PNG 压缩帧 | Windows 只对 256px 承诺支持 PNG 帧，小尺寸在部分 shell 路径会被忽略、回退成"把 256 缩下来"，表现为**图标发虚** | 16–128 写 DIB(BMP) 帧，只有 256 用 PNG 帧 |
+| 只有 16/24/32/48/64/256 六档 | 125%（40px）、150%（96px）等 DPI 下只能缩放，边缘发软 | 补齐 16/20/24/32/40/48/64/96/128/256 十档，每档按目标尺寸从矢量母版单独栅格化 |
+| 直接缩放母版，直边落在半像素上 | 每条边被抗锯齿抹成两行灰，32px 的任务栏图标看着就糊 | 几何吸附到整数像素：底板留白、横杠高度/间距/起点全部取整，横杠按「上一条下沿 + 间距」顺排，16px 也不会粘成一坨 |
+
+脚本只依赖本机 Chrome / Edge（无头截图，可用 `CHROME_PATH` 指定），不引入 npm 依赖；
+`scripts/build-app-icon.test.mjs` 会守住"小尺寸必须是 DIB 帧""16/20 用两杠母版"这两条。
+
+### 换了图标但 Windows 上还是旧图？
+
+三件事按顺序检查：
+
+1. **exe 里的资源有没有真的换掉**：`cargo build` 后看 `target/debug/build/app-catch-*/out/resource.lib` 的 mtime。
+   `src-tauri/build.rs` 里为 `icons/*` 显式声明了 `rerun-if-changed`——tauri-build 自己只管
+   `tauri.conf.json` 与 `capabilities/`，少了这几行，换 ico 后构建脚本不重跑，exe 会一直嵌着旧图标。
+2. **图标缓存**：资源管理器按路径缓存图标，重编后仍可能显示旧图。`ie4uinit.exe -show` 可刷新
+   （必要时再删 `%LOCALAPPDATA%\IconCache.db` 并重启资源管理器）。
+3. **已安装的副本**：NSIS 安装目录里的 exe / 开始菜单快捷方式指向的是旧构建，需要重新安装。
 
 ## 三处会同时被看到的地方
 
