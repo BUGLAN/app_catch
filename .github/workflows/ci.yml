@@ -64,14 +64,16 @@ jobs:
           pnpm tauri build --target ${{ matrix.target }}
           --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-      # 构建产物同时留一份 workflow artifact，失败时不用本地复现也能排查
+      # 构建产物同时留一份 workflow artifact，失败时不用本地复现也能排查。
+      # 路径是 target/ 而不是 src-tauri/target/：本仓库是 Cargo workspace，
+      # target 目录在**仓库根**，写成 src-tauri/target 会一条都匹配不到。
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: ci-bundle-${{ matrix.target }}
           path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            target/${{ matrix.target }}/release/bundle/msi/*.msi
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: warn
           retention-days: 7

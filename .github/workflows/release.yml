@@ -65,8 +65,15 @@ jobs:
       - name: 收集安装包与签名件
         run: |
           mkdir -p bundle-out updater-out
-          base="src-tauri/target/${{ matrix.target }}/release/bundle"
-          if [ ! -d "$base" ]; then base="src-tauri/target/release/bundle"; fi
+          # 本仓库是 Cargo workspace，target 目录在**仓库根**（不是 src-tauri/target）：
+          # 写成 src-tauri/target 时 find 一条都匹配不到，upload-artifact 直接失败，
+          # release job 根本不会被执行 —— 发布"只剩下 tag 没有资产"就是这么来的。
+          base="target/${{ matrix.target }}/release/bundle"
+          if [ ! -d "$base" ]; then base="target/release/bundle"; fi
+          if [ ! -d "$base" ]; then
+            echo "找不到构建产物目录 target/${{ matrix.target }}/release/bundle" >&2
+            exit 1
+          fi
           # 给人下载的安装包；macOS 的 .app.tar.gz 同时是更新器要下载的资产，必须一起传
           find "$base" \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*-setup.exe' -o -name '*.msi' \) \
             -exec cp {} bundle-out/ \;
