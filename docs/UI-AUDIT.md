@@ -235,3 +235,22 @@
   - `Dialog` 替换原来的 `.modal-backdrop` 内联结构，取消/确认回调未改。
 - **可审查、可回滚**：所有改动集中在 `src/`（组件与样式）以及新增的测试与文档；删除的只有 `src/styles.css` 一个文件（内容已按职责拆分到 5 个文件）。
 
+
+---
+
+## H. 动效体系（第二轮）
+
+| # | 问题 | 处理 |
+| --- | --- | --- |
+| H1 | 主区视图（详情 / 表单 / 设置 / 空态 / 骨架）硬切 | `.main-inner` 上用 WAAPI 补 180ms 淡入 + 4px 上浮；不重挂载组件，日志订阅与图标请求不受影响 |
+| H2 | Toast、删除弹窗只有进场没有退场 | `usePresence` 延迟卸载 + `data-state` 驱动退场；退场 120ms、加速曲线；用定时器而不是 `animationend` 决定卸载 |
+| H3 | 缓动只有 standard/out 两条，所有动作一个节奏 | 新增 `--ease-in`（退场）、`--ease-spring`（弹出）、`--duration-instant`（按压）与 loop/pulse 时长 |
+| H4 | 列表首屏一次性出现 | 24ms 错峰、封顶 8 项（`--stagger-index` 由 AppList 内联写入） |
+| H5 | 折叠态下"正在运行"没有活性信号 | 运行中状态点加一圈缓慢扩散的光环（只动 transform/opacity） |
+| H6 | 主题切换时面板、边框瞬间跳变 | View Transitions API 整屏交叉淡化；不支持时退化为直接切换 |
+| H7 | Tab 面板硬切；选中指示条静态 | 面板 opacity 淡入（不位移，避免日志区跳）；指示条从中心展开 |
+| H8 | `settings.css` 有裸值（`160ms ease-out` / `999px` / `1.1s`）且不在契约检查范围 | 全部 token 化，纳入 `styleContract.test.ts`；删掉与全局重复的 reduced-motion 块 |
+
+约束：只动 transform / opacity（侧栏折叠的 width 过渡保留，它需要推开主区）。
+reduced-motion：CSS 走 base.css 全局降级；JS 驱动的动画（视图进场、主题淡化、退场等待）在 `src/lib/motion.ts` 里直接跳过。
+新增契约：动效时长 / 缓动只走 token、浮层必须有退场且退场更短、错峰有封顶。

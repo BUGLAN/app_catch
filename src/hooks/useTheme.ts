@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
+import { withViewTransition } from "../lib/motion";
 import { readString, writeString, STORAGE_KEYS } from "../lib/preferences";
 
 /** 用户的三个选项。 */
@@ -98,18 +99,21 @@ export function useTheme(): UseThemeResult {
     return () => media.removeEventListener("change", onChange);
   }, [mode]);
 
-  const setMode = useCallback((next: ThemeMode) => {
-    setModeState(next);
-    writeString(STORAGE_KEYS.theme, next);
-  }, []);
-
-  const cycle = useCallback(() => {
-    setModeState((current) => {
-      const next = nextThemeMode(current);
+  /*
+   * 用户主动切换：先在 View Transition 里同步写好 <html data-theme>，
+   * 浏览器据此做整屏交叉淡化；随后 React 状态跟上，effect 里的 applyTheme 幂等。
+   * 不支持 / 减弱动效时 withViewTransition 退化为直接执行。
+   */
+  const setMode = useCallback(
+    (next: ThemeMode) => {
+      withViewTransition(() => applyTheme(resolveTheme(next, prefDark), next));
+      setModeState(next);
       writeString(STORAGE_KEYS.theme, next);
-      return next;
-    });
-  }, []);
+    },
+    [prefDark]
+  );
+
+  const cycle = useCallback(() => setMode(nextThemeMode(mode)), [mode, setMode]);
 
   return { mode, theme, setMode, cycle };
 }

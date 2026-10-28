@@ -251,4 +251,11 @@ code,
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+
+  /* 主题淡化在 JS 侧已跳过；这里兜底，防止别处直接调用 startViewTransition */
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }

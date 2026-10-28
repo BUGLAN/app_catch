@@ -12,7 +12,7 @@
  *   2. 左侧抽屉（Sidebar）可折叠、可拖拽调宽，状态持久化；
  *   3. 标题栏全局搜索：按名称 / 标签 / id 过滤左侧列表。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { api, isNotHosted, toCommandError } from "./lib/api";
 import { invalidateIcon } from "./lib/iconModel";
@@ -35,10 +35,12 @@ import { IconPlus } from "./components/ui/Icons";
 import { EmptyState, PanelSkeleton } from "./components/ui/Primitives";
 import { Toast, type ToastMessage, type ToastTone } from "./components/Toast";
 import { useRailCompact } from "./hooks/useMediaQuery";
+import { usePresence } from "./hooks/usePresence";
 import { useSidebar } from "./hooks/useSidebar";
 import { useTheme } from "./hooks/useTheme";
 import { isHosted } from "./lib/api";
 import { readUpdatePrefs } from "./lib/preferences";
+import { playViewEnter } from "./lib/motion";
 import { filterApps } from "./lib/search";
 import { backgroundCheckForUpdate } from "./lib/updater";
 
@@ -367,6 +369,31 @@ export default function App() {
 
   const closeDialog = useCallback(() => setDeleteTarget(null), []);
 
+  /** 删除确认弹窗的存在态：关闭后再保留一拍，让退场动画播完。 */
+  const dialogPresence = usePresence(deleteTarget);
+
+  /**
+   * 主区"当前是哪个视图"：变化时在 .main-inner 上补一段进场动画。
+   *
+   * 只在视图种类或选中应用变化时触发；轮询刷新、会话切换不会触发（那是同一个视图里的数据更新）。
+   */
+  const viewKey = settingsOpen
+    ? "settings"
+    : editing
+      ? "form:" + (formTarget?.id ?? "__new__")
+      : loading
+        ? "loading"
+        : selectedApp
+          ? "detail:" + selectedApp.id
+          : "empty";
+  const mainInnerRef = useRef<HTMLDivElement | null>(null);
+  const viewAnimationRef = useRef<Animation | null>(null);
+  // layout effect：在浏览器绘制新视图之前挂上动画起始帧，避免先闪一帧终态
+  useLayoutEffect(() => {
+    viewAnimationRef.current?.cancel();
+    viewAnimationRef.current = playViewEnter(mainInnerRef.current);
+  }, [viewKey]);
+
   /**
    * 主区内容：表单 / 加载中 / 详情 / 空态。
    *
@@ -518,13 +545,16 @@ export default function App() {
           aria-busy={loading}
           aria-label="主内容"
         >
-          <div className="main-inner">{mainContent}</div>
+          <div className="main-inner" ref={mainInnerRef}>
+            {mainContent}
+          </div>
         </main>
       </div>
 
-      {deleteTarget ? (
+      {dialogPresence.value ? (
         <Dialog
           title="确认删除"
+          closing={dialogPresence.leaving}
           onClose={closeDialog}
           actions={
             <>
@@ -548,7 +578,7 @@ export default function App() {
           }
         >
           <p>
-            将删除应用配置「<strong>{deleteTarget.app.name}</strong>」（id: {deleteTarget.app.id}）。
+            将删除应用配置「<strong>{dialogPresence.value.app.name}</strong>」（id: {dialogPresence.value.app.id}）。
           </p>
           <p className="modal-note">
             已有会话目录与日志不会被删除，仍可在 sessions 目录中查看。

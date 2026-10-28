@@ -103,14 +103,15 @@ export function AppList({
 
   return (
     <ul className="app-list">
-      {apps.map((app) => {
+      {apps.map((app, index) => {
         const state = aggregateState(app.id, sessions);
         const runningCount = sessions.filter(
           (session) => session.app_id === app.id && session.state === "running"
         ).length;
         const selected = app.id === selectedId;
         return (
-          <li key={app.id}>
+          // 错峰入场的序号（motion.css 封顶 8 项）
+          <li key={app.id} style={{ "--stagger-index": index } as React.CSSProperties}>
             <Tooltip label={railItemTooltip(app, sessions)} enabled={collapsed}>
               <div
                 className={"app-item" + (selected ? " is-selected" : "")}

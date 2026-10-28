@@ -151,6 +151,7 @@ interface SegmentedProps<T extends string> {
  * 读屏不会报错，只是静默失效）。
  *
  * 只有当前选中的面板才渲染 —— 与原来的条件渲染行为一致，不做额外的 DOM 保留。
+ * 每次切换都是新挂载，`.tab-panel` 的淡入关键帧因此自然播放（见 primitives.css）。
  */
 interface TabPanelProps extends React.HTMLAttributes<HTMLDivElement> {
   panelId: string;
@@ -172,7 +173,7 @@ export const TabPanel = forwardRef<HTMLDivElement, TabPanelProps>(function TabPa
       id={panelId + "-panel-" + value}
       role="tabpanel"
       aria-label={label}
-      className={className}
+      className={className ? "tab-panel " + className : "tab-panel"}
       tabIndex={0}
       ref={ref}
       {...rest}

@@ -23,101 +23,106 @@
 :root {
   color-scheme: dark;
 
-  /* ---------- 1. 调色板：中性色相（蓝灰偏冷，但饱和度压到最低） ---------- */
-  --ink-950: #05070c;
-  --ink-900: #070910;
-  --ink-850: #0b0e16;
-  --ink-800: #0f131c;
-  --ink-750: #131826;
-  --ink-700: #171d2b;
-  --ink-600: #212a3b;
-  --ink-500: #2f3a4f;
+  /*
+   * 视觉方向：macOS 原生的石墨灰 + 系统蓝。
+   *   - 中性色是**纯灰**（不再偏蓝）：上一版的蓝灰底 + 靛紫主色正是"AI 产品"那套观感；
+   *   - 颜色只留给两件事：可操作（系统蓝）与状态（绿 / 橙 / 红）；
+   *   - 层级靠明度阶梯与 1px 半透明描边，不靠渐变和发光。
+   */
 
-  --haze-400: #6b7488;
-  --haze-300: #8b95a7;
-  --haze-200: #b3bccb;
-  --haze-100: #e9edf4;
+  /* ---------- 1. 调色板：石墨灰阶（深色） ---------- */
+  --graphite-950: #161618;
+  --graphite-900: #1a1a1c;
+  --graphite-850: #1c1c1e;
+  --graphite-800: #242426;
+  --graphite-750: #262628;
+  --graphite-700: #2c2c2e;
+  --graphite-650: #313134;
+  --graphite-600: #3a3a3c;
 
-  /* 主色：靛蓝（不是通用"AI 蓝"），白字 5.18:1 */
-  --violet-600: #4a4bc4;
-  --violet-500: #5b5ce0;
-  --violet-400: #6b6ceb;
-  --violet-200: #a5a6ff;
+  /* 系统蓝（macOS controlAccent）：填充用略深的一档，保证白字 ≥ 4.5:1 */
+  --blue-fill: #0071e3;        /* 白字 4.7:1 */
+  --blue-fill-hover: #0a6cd6;  /* hover 变深而不是变亮：变亮会把白字压到 4.2:1 */
+  --blue-fill-active: #0062c4;
+  --blue-text: #5aa9ff;        /* 6.2:1 on panel */
 
-  --mint-400: #3ddc97;
-  --amber-400: #f2b34c;
-  --rose-500: #d93a3f;
-  --rose-400: #ff8080;
+  --green-400: #30d158;
+  --orange-400: #ffb340;
+  --red-400: #ff6961;
+  --red-fill: #d93a32;         /* 白字 4.6:1 */
 
   /* ---------- 2. 语义 token：表面层级（越靠前越"远"） ---------- */
-  --surface-base: var(--ink-900);        /* 应用画布 */
-  --surface-raised: var(--ink-850);      /* 标题栏 / 侧栏 */
-  --surface-panel: var(--ink-800);       /* 卡片 */
-  --surface-elevated: var(--ink-750);    /* 弹窗 / 浮层 */
-  --surface-overlay: #141a27;            /* hover / 表头 / 代码块 */
-  --surface-active: #1a2130;             /* 选中 / 按下 */
-  --surface-selected: #1c2436;           /* 明确的选中填充 */
-  --surface-inset: var(--ink-950);       /* 输入框 / 日志区（内凹） */
-  /* 半透明标题栏：毛玻璃底 */
-  --surface-glass: rgba(9, 12, 19, 0.72);
-  --backdrop: rgba(4, 6, 10, 0.66);
-  --hover-tint: rgba(255, 255, 255, 0.035);
-  --row-hover-tint: rgba(255, 255, 255, 0.03);
-  --skeleton-sheen: rgba(255, 255, 255, 0.05);
-  --selection-bg: rgba(140, 140, 255, 0.28);
+  --surface-base: var(--graphite-850);    /* 主区画布 */
+  --surface-raised: var(--graphite-800);  /* 标题栏 / 侧栏（与 Finder 侧栏同一明度关系） */
+  --surface-panel: var(--graphite-750);   /* 卡片 */
+  --surface-elevated: var(--graphite-700);/* 弹窗 / 浮层 */
+  --surface-overlay: var(--graphite-700); /* 表头 / 代码块 / 次要按钮底 */
+  --surface-active: var(--graphite-650);  /* 按下 */
+  --surface-selected: rgba(255, 255, 255, 0.1); /* 侧栏选中行（与 macOS 非焦点选中同感） */
+  --surface-inset: var(--graphite-900);   /* 输入框 / 日志区（内凹） */
+  --surface-glass: var(--graphite-800);
+  --backdrop: rgba(0, 0, 0, 0.5);
+  --hover-tint: rgba(255, 255, 255, 0.06);
+  --row-hover-tint: rgba(255, 255, 255, 0.04);
+  --skeleton-sheen: rgba(255, 255, 255, 0.06);
+  --selection-bg: rgba(10, 132, 255, 0.35);
 
   /* ---------- 3. 语义 token：文字 ---------- */
-  --text-primary: var(--haze-100);       /* 15.4:1 on panel */
-  --text-secondary: var(--haze-200);     /*  9.0:1 on panel */
-  --text-muted: var(--haze-300);         /*  6.0:1 on panel / 6.4:1 on rail */
-  --text-disabled: #6a7486;              /* 禁用态：AA 有豁免，但仍要"看得出内容" */
-  --text-on-accent: #ffffff;             /*  5.2:1 on --accent */
+  --text-primary: #f5f5f7;      /* 13.9:1 on panel */
+  --text-secondary: #c2c2c7;    /*  8.5:1 on panel */
+  --text-muted: #98989f;        /*  5.3:1 on panel */
+  --text-disabled: #6c6c72;
+  --text-on-accent: #ffffff;
   --text-on-danger: #ffffff;
 
   /* ---------- 4. 语义 token：描边 ---------- */
-  --border-subtle: #1a2030;              /* 行分隔、区块内部分隔（装饰性） */
-  --border: #232b3d;                     /* 卡片外框 */
-  --border-strong: #33405a;              /* 强分隔 */
-  --border-control: var(--haze-400);     /* 交互控件外框：≥3:1 */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-control: #737379;    /* 交互控件外框：3.2:1 on panel */
   --border-inverse: rgba(255, 255, 255, 0.08);
   --border-glass: rgba(255, 255, 255, 0.06);
 
   /* ---------- 5. 语义 token：强调 / 状态 ---------- */
-  --accent: var(--violet-500);           /* 白字 5.18:1，填充 vs 面板 3.59:1 */
-  --accent-hover: var(--violet-400);
-  --accent-active: var(--violet-600);
-  --accent-text: var(--violet-200);      /* 8.9:1 on panel：强调文字专用 */
-  --accent-soft: rgba(91, 92, 224, 0.16);
-  --accent-ring: rgba(140, 140, 255, 0.42);
+  --accent: var(--blue-fill);
+  --accent-hover: var(--blue-fill-hover);
+  --accent-active: var(--blue-fill-active);
+  --accent-text: var(--blue-text);
+  --accent-soft: rgba(10, 132, 255, 0.16);
+  --accent-ring: rgba(10, 132, 255, 0.4);
 
-  --success: var(--mint-400);            /* 10.4:1 on panel */
-  --success-soft: rgba(61, 220, 151, 0.12);
-  --success-border: rgba(61, 220, 151, 0.32);
+  --success: var(--green-400);  /* 7.5:1 on panel */
+  --success-soft: rgba(48, 209, 88, 0.12);
+  --success-border: rgba(48, 209, 88, 0.3);
 
-  --warning: var(--amber-400);           /* 10.1:1 on panel */
-  --warning-text: #ffd8a0;
-  --warning-soft: rgba(242, 179, 76, 0.1);
-  --warning-border: rgba(242, 179, 76, 0.3);
+  --warning: var(--orange-400); /* 8.5:1 on panel */
+  --warning-text: #ffd08a;
+  --warning-soft: rgba(255, 179, 64, 0.1);
+  --warning-border: rgba(255, 179, 64, 0.3);
 
-  --danger: var(--rose-400);             /*  7.5:1 on panel：文字 / 图标 */
-  --danger-solid: var(--rose-500);       /* 白字 4.8:1 */
-  --danger-solid-hover: #e5484d;
-  --danger-soft: rgba(255, 128, 128, 0.1);
-  --danger-border: rgba(255, 128, 128, 0.3);
-  --danger-text: #ffb3b3;
+  --danger: var(--red-400);     /* 5.4:1 on panel */
+  --danger-solid: var(--red-fill);
+  --danger-solid-hover: #e5453c;
+  --danger-soft: rgba(255, 105, 97, 0.1);
+  --danger-border: rgba(255, 105, 97, 0.3);
+  --danger-text: #ffb4ae;
 
   --info-soft: var(--surface-overlay);
-  --focus-ring: var(--violet-200);       /* 8.9:1 on panel */
+  --focus-ring: var(--blue-text); /* 6.2:1 on panel */
 
-  /* 窗口控制：关闭按钮 hover 变红（Windows 约定色） */
+  /* 品牌徽标：单色（前景反相），不再用彩色方块 */
+  --brand-bg: var(--text-primary);
+  --brand-fg: var(--surface-raised);
+
+  /* 窗口控制（仅 Windows / Linux）：关闭按钮 hover 变红是 Windows 约定色 */
   --window-close-hover: #e81123;
   --window-close-fg: #ffffff;
   --window-control-hover: var(--hover-tint);
 
   /* 浮层 / 工具提示：浅色主题下也保持深色，形成"抬起"的层 */
-  --tooltip-bg: #131826;
-  --tooltip-fg: #eef2f8;
-  --tooltip-border: rgba(255, 255, 255, 0.1);
+  --tooltip-bg: #2c2c2e;
+  --tooltip-fg: #f5f5f7;
+  --tooltip-border: rgba(255, 255, 255, 0.12);
 
   /* ---------- 6. 间距刻度（4 的倍数，2 用于贴合） ---------- */
   --space-0-5: 2px;
@@ -134,10 +139,10 @@
 
   /* ---------- 7. 圆角：外大内小，成体系 ---------- */
   --radius-xs: 4px;   /* 微小标记 */
-  --radius-sm: 6px;   /* 徽标 / 小按钮 */
-  --radius-md: 8px;   /* 按钮 / 输入框 / 列表项 */
-  --radius-lg: 12px;  /* 卡片 / 弹窗 */
-  --radius-xl: 16px;  /* 大浮层 */
+  --radius-sm: 5px;   /* 徽标 / 小按钮 */
+  --radius-md: 6px;   /* 按钮 / 输入框 / 列表项（macOS 控件圆角） */
+  --radius-lg: 10px;  /* 卡片 */
+  --radius-xl: 12px;  /* 弹窗 / 大浮层（与 macOS sheet 一致） */
   --radius-full: 999px;
 
   /* ---------- 8. 字体 ---------- */
@@ -145,7 +150,11 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Segoe UI Variable Text",
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei",
     "Noto Sans SC", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular,
+  /*
+   * 等宽：ui-monospace 在 WKWebView（macOS）解析为 SF Mono；Chromium/WebView2 不认它，
+   * 顺延到 Cascadia Mono / Consolas。原来 Cascadia 排第一，Mac 上装了它的机器会用错字体。
+   */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", "JetBrains Mono",
     Consolas, "Liberation Mono", monospace;
 
   --text-2xs: 11px;   /* 最小档：徽标 / 表头 / 时间戳 */
@@ -168,31 +177,58 @@
   --tracking-cn: 0.01em;    /* 中文标题的极轻字距 */
 
   /* ---------- 9. 阴影：光源统一从上方来，色相跟随底色 ---------- */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
-  --shadow-md: 0 6px 20px -8px rgba(0, 0, 0, 0.65), 0 1px 2px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 24px 60px -24px rgba(0, 0, 0, 0.8), 0 4px 12px -4px rgba(0, 0, 0, 0.6);
-  --shadow-pop: 0 12px 32px -12px rgba(0, 0, 0, 0.7);
-  --shadow-inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 4px 12px -4px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 20px 48px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-pop: 0 8px 24px -8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
   /* ---------- 10. 动效 ---------- */
+  /*
+   * 时长按"距离与重要性"分档，而不是一个时长通吃：
+   *   instant —— 按压 / 颜色反馈，必须跟手
+   *   fast    —— hover、tooltip、所有退场（≈ 进场的 65%，退场要比进场干脆）
+   *   base    —— 视图切换、toast / 弹窗进场、侧栏折叠
+   *   slow    —— 主题交叉淡化这类整屏变化
+   * TS 侧通过 src/lib/motion.ts 读同一组 token，两边不各写一份数字。
+   */
+  --duration-instant: 80ms;
   --duration-fast: 120ms;
   --duration-base: 180ms;   /* 侧栏折叠 / 展开的时长（150–200ms） */
   --duration-slow: 260ms;
-  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* 循环动画：只给"正在进行"的状态用（骨架屏、不确定进度、运行脉冲） */
+  --duration-loop: 1400ms;
+  --duration-pulse: 2400ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);  /* 原地状态变化 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);      /* 进场：减速落定 */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);          /* 退场：加速离开 */
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1); /* 轻微回弹：只给"弹出"的小元素 */
+
+  --motion-distance-sm: 4px;   /* 视图 / 面板进场位移 */
+  --motion-distance-md: 8px;   /* 浮层（弹窗 / toast）进场位移 */
+  --motion-scale-press: 0.97;  /* 按压缩放 */
+  --motion-scale-pop: 0.96;    /* 弹窗进场起始缩放 */
+  --stagger-step: 24ms;        /* 列表错峰：每项递增，最多叠 8 项 */
+  /* 列表项序号：由 AppList 以内联样式写到每个 <li> 上，这里只是默认值 */
+  --stagger-index: 0;
 
   /* ---------- 11. 尺寸 ---------- */
   --titlebar-height: 48px;
-  /* macOS 左上角红黄绿安全区（约 80px，由 chrome.css 使用） */
-  --titlebar-mac-inset: 80px;
+  /*
+   * macOS 左上角红黄绿安全区。
+   * 三个按钮从 x=18 起、各 14px、间距 6px，右缘约 72px；
+   * 再留出与 macOS 工具栏一致的 ~20px 呼吸距离 → 92px。原来的 80px 会让徽标贴着绿灯。
+   */
+  --titlebar-mac-inset: 92px;
   --window-control-width: 46px;
   --window-control-height: 32px;
 
-  /* 侧栏（抽屉）：折叠 = 56，展开默认 220，可拖到 320 */
+  /* 侧栏（抽屉）：折叠 = 56；展开 184–320，默认 220（与 useSidebar.ts 一致） */
   --rail-width: 220px;
   --rail-expanded-width: 220px;
   --rail-collapsed-width: 56px;
-  --rail-min-width: 56px;
+  --rail-min-width: 184px;
   --rail-max-width: 320px;
   --rail-handle-width: 4px;
   --rail-item-size: 34px;
@@ -203,7 +239,7 @@
    */
   --rail-current-width: var(--rail-expanded-width);
 
-  --control-height: 30px;
+  --control-height: 28px;
   --control-height-sm: 24px;
   --control-height-lg: 34px;
   --focus-ring-width: 2px;
@@ -230,66 +266,66 @@
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --surface-base: #f4f6fb;
-  --surface-raised: #fbfcfe;
+  --surface-base: #f5f5f7;
+  --surface-raised: #ececee;
   --surface-panel: #ffffff;
   --surface-elevated: #ffffff;
-  --surface-overlay: #eef2f9;
-  --surface-active: #e5ebf6;
-  --surface-selected: #e7ecfa;
-  --surface-inset: #f5f7fb;
-  --surface-glass: rgba(251, 252, 254, 0.76);
-  --backdrop: rgba(17, 24, 39, 0.32);
-  --hover-tint: rgba(17, 24, 39, 0.045);
-  --row-hover-tint: rgba(17, 24, 39, 0.035);
-  --skeleton-sheen: rgba(255, 255, 255, 0.7);
-  --selection-bg: rgba(75, 86, 210, 0.16);
+  --surface-overlay: #f2f2f4;
+  --surface-active: #e3e3e6;
+  --surface-selected: rgba(0, 0, 0, 0.08);
+  --surface-inset: #ffffff;
+  --surface-glass: #ececee;
+  --backdrop: rgba(0, 0, 0, 0.24);
+  --hover-tint: rgba(0, 0, 0, 0.05);
+  --row-hover-tint: rgba(0, 0, 0, 0.03);
+  --skeleton-sheen: rgba(255, 255, 255, 0.8);
+  --selection-bg: rgba(0, 102, 204, 0.18);
 
-  --text-primary: #11151c;    /* 18.3:1 on panel */
-  --text-secondary: #40495a;  /*  9.1:1 on panel */
-  --text-muted: #626d80;      /*  5.2:1 on panel / 4.8:1 on base */
-  --text-disabled: #939dae;
+  --text-primary: #1d1d1f;    /* 16.8:1 on panel */
+  --text-secondary: #48484a;  /*  9.1:1 on panel */
+  --text-muted: #636368;      /*  5.9:1 on panel / 5.0:1 on raised */
+  --text-disabled: #a1a1a6;
   --text-on-accent: #ffffff;
   --text-on-danger: #ffffff;
 
-  --border-subtle: #e7ecf4;
-  --border: #dbe2ec;
-  --border-strong: #c2cbd9;
-  --border-control: #8b95a7;  /* 3.0:1 on panel */
-  --border-inverse: rgba(17, 24, 39, 0.06);
-  --border-glass: rgba(17, 24, 39, 0.07);
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --border-control: #86868b;  /* 3.6:1 on panel */
+  --border-inverse: rgba(0, 0, 0, 0.06);
+  --border-glass: rgba(0, 0, 0, 0.07);
 
-  --accent: #4b56d2;          /* 白字 5.9:1，on white 5.9:1 */
-  --accent-hover: #414cc6;
-  --accent-active: #3841b4;
-  --accent-text: #3c46c8;     /* 6.6:1 on panel */
-  --accent-soft: rgba(75, 86, 210, 0.1);
-  --accent-ring: rgba(75, 86, 210, 0.32);
+  --accent: #0066cc;          /* 白字 5.6:1 */
+  --accent-hover: #0071e3;
+  --accent-active: #0059b3;
+  --accent-text: #0060c0;     /* 6.1:1 on panel */
+  --accent-soft: rgba(0, 102, 204, 0.1);
+  --accent-ring: rgba(0, 102, 204, 0.3);
 
-  --success: #0f7a52;         /* 5.4:1 on panel */
-  --success-soft: rgba(15, 122, 82, 0.1);
-  --success-border: rgba(15, 122, 82, 0.28);
+  --success: #1a7a35;         /* 5.4:1 on panel */
+  --success-soft: rgba(26, 122, 53, 0.1);
+  --success-border: rgba(26, 122, 53, 0.28);
 
-  --warning: #8a5b00;         /* 5.9:1 on panel */
-  --warning-text: #6f4a00;
-  --warning-soft: rgba(196, 132, 0, 0.12);
-  --warning-border: rgba(196, 132, 0, 0.3);
+  --warning: #8a5100;         /* 6.4:1 on panel */
+  --warning-text: #6b3f00;
+  --warning-soft: rgba(201, 120, 0, 0.12);
+  --warning-border: rgba(201, 120, 0, 0.3);
 
-  --danger: #c02b2b;          /* 5.8:1 on panel */
-  --danger-solid: #c22a2a;
-  --danger-solid-hover: #a82323;
-  --danger-soft: rgba(192, 43, 43, 0.08);
-  --danger-border: rgba(192, 43, 43, 0.24);
-  --danger-text: #8f1f1f;
+  --danger: #c9221a;          /* 5.6:1 on panel */
+  --danger-solid: #c9221a;
+  --danger-solid-hover: #b01d16;
+  --danger-soft: rgba(201, 34, 26, 0.08);
+  --danger-border: rgba(201, 34, 26, 0.24);
+  --danger-text: #8f1a14;
 
   --info-soft: var(--surface-overlay);
-  --focus-ring: #4b56d2;
+  --focus-ring: #0066cc;
 
-  --window-control-hover: rgba(17, 24, 39, 0.06);
+  --window-control-hover: rgba(0, 0, 0, 0.06);
 
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
-  --shadow-md: 0 8px 24px -12px rgba(16, 24, 40, 0.18), 0 1px 2px rgba(16, 24, 40, 0.06);
-  --shadow-lg: 0 24px 48px -24px rgba(16, 24, 40, 0.28), 0 2px 6px rgba(16, 24, 40, 0.08);
-  --shadow-pop: 0 12px 28px -12px rgba(16, 24, 40, 0.22);
+  --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px -4px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 20px 48px -12px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  --shadow-pop: 0 8px 24px -8px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.06);
   --shadow-inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }

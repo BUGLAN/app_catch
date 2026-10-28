@@ -8,9 +8,12 @@
  *     读屏能区分"做成了"和"没做成"。
  *   - 悬停/聚焦暂停倒计时：用户正要读的时候不会被抢走。TTL 仍是 3.5 秒。
  *   - 最多同时显示 3 条，超出丢弃最旧的。
+ *   - 退场动画：到时或点关闭后先进入 leaving 态播放收起（--duration-fast，加速曲线），
+ *     再通知父组件移除。用定时器而不是 animationend 决定何时移除——事件不保证触发。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { exitDuration } from "../lib/motion";
 import { IconAlert, IconCheck, IconClose } from "./ui/Icons";
 
 /** toast 语气。 */
@@ -32,21 +35,33 @@ const TOAST_TTL_MS = 3500;
 
 function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: number) => void }) {
   const [paused, setPaused] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const remainingRef = useRef(TOAST_TTL_MS);
   const startedAtRef = useRef(0);
 
+  /** 开始退场：播完收起动画再真正移除。重复调用无副作用。 */
+  const leave = useCallback(() => setLeaving(true), []);
+
   useEffect(() => {
-    if (paused) {
+    if (!leaving) {
+      return;
+    }
+    const timer = window.setTimeout(() => onDismiss(toast.id), exitDuration());
+    return () => window.clearTimeout(timer);
+  }, [leaving, onDismiss, toast.id]);
+
+  useEffect(() => {
+    if (paused || leaving) {
       return;
     }
     startedAtRef.current = Date.now();
-    const timer = window.setTimeout(() => onDismiss(toast.id), remainingRef.current);
+    const timer = window.setTimeout(leave, remainingRef.current);
     return () => {
       window.clearTimeout(timer);
       // 暂停时把已过去的时间扣掉，恢复后继续剩余时长
       remainingRef.current = Math.max(0, remainingRef.current - (Date.now() - startedAtRef.current));
     };
-  }, [onDismiss, toast.id, paused]);
+  }, [leave, paused, leaving]);
 
   const pause = useCallback(() => setPaused(true), []);
   const resume = useCallback(() => setPaused(false), []);
@@ -55,6 +70,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
     <div
       className={"toast-item toast-" + toast.tone}
       role={toast.tone === "error" ? "alert" : "status"}
+      data-state={leaving ? "leaving" : "open"}
       onMouseEnter={pause}
       onMouseLeave={resume}
       onFocus={pause}
@@ -67,7 +83,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
       <button
         type="button"
         className="toast-close"
-        onClick={() => onDismiss(toast.id)}
+        onClick={leave}
         aria-label="关闭提示"
       >
         <IconClose size={12} />

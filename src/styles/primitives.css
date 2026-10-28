@@ -30,7 +30,7 @@
     border-color var(--duration-fast) var(--ease-standard),
     color var(--duration-fast) var(--ease-standard),
     box-shadow var(--duration-fast) var(--ease-standard),
-    transform var(--duration-fast) var(--ease-standard);
+    transform var(--duration-instant) var(--ease-standard);
 }
 
 .btn:hover:not(:disabled) {
@@ -39,8 +39,11 @@
 }
 
 .btn:active:not(:disabled) {
-  /* 轻微下沉，给"按下"一个物理反馈 */
-  transform: translateY(1px);
+  /*
+   * 按压：轻微缩小 + 下沉 1px。instant 时长保证跟手；
+   * 松开时同一条 transition 反向播放，不会"啪"地弹回。
+   */
+  transform: translateY(1px) scale(var(--motion-scale-press));
 }
 
 .btn:disabled {
@@ -64,14 +67,13 @@
   background: var(--accent);
   border-color: var(--accent);
   color: var(--text-on-accent);
-  font-weight: var(--weight-semibold);
+  font-weight: var(--weight-medium);
   box-shadow: var(--shadow-sm);
 }
 
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
-  box-shadow: var(--shadow-md);
 }
 
 .btn-primary:active:not(:disabled) {
@@ -250,7 +252,7 @@
 
 .tag-muted {
   background: transparent;
-  border: 1px dashed var(--border);
+  border: 1px solid var(--border);
   color: var(--text-muted);
 }
 
@@ -275,11 +277,11 @@
   width: 100%;
   min-height: var(--control-height);
   padding: var(--space-1) var(--space-2-5);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--surface-inset);
   color: var(--text-primary);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   line-height: var(--leading-normal);
   transition: border-color var(--duration-fast) var(--ease-standard),
     box-shadow var(--duration-fast) var(--ease-standard),
@@ -292,7 +294,7 @@
 }
 
 .input:hover:not(:disabled):not(:focus) {
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
 }
 
 /* 文本控件用 :focus 而非 :focus-visible：键盘输入时也需要看到状态 */
@@ -320,6 +322,15 @@
 .input.mono {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+}
+
+/*
+ * 占位符是"例如 xxx"这类中文说明，用等宽字体会把中文撑成方块、字距松散；
+ * 只有用户真正输入的值才用等宽。
+ */
+.input.mono::placeholder {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
 }
 
 .textarea {
@@ -477,8 +488,10 @@
   white-space: nowrap;
   cursor: pointer;
   transition: background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
     color var(--duration-fast) var(--ease-standard),
-    box-shadow var(--duration-fast) var(--ease-standard);
+    box-shadow var(--duration-fast) var(--ease-standard),
+    transform var(--duration-instant) var(--ease-standard);
 }
 
 .seg:hover:not(.is-active) {
@@ -494,7 +507,12 @@
 }
 
 .seg:active {
-  transform: translateY(1px);
+  transform: scale(var(--motion-scale-press));
+}
+
+/* 分段控件对应的内容面板：切换时同一位置交叉淡入（只动 opacity，不位移，避免日志区跳动） */
+.tab-panel {
+  animation: fade-in var(--duration-base) var(--ease-out);
 }
 
 /* ---------- 卡片（面板） ---------- */
@@ -517,10 +535,7 @@
     box-shadow var(--duration-base) var(--ease-standard);
 }
 
-.panel:hover {
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-md);
-}
+/* 卡片本身不可点击：不给 hover 反馈（原来整卡 hover 发亮，暗示了不存在的可点性） */
 
 .panel-head {
   display: flex;
@@ -798,7 +813,7 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-6);
-  border: 1px dashed var(--border-strong);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   color: var(--text-muted);
   font-size: var(--text-xs);
@@ -826,7 +841,7 @@
   padding: var(--space-4);
   background: var(--backdrop);
   backdrop-filter: blur(3px);
-  animation: backdrop-in var(--duration-base) var(--ease-out);
+  animation: fade-in var(--duration-base) var(--ease-out);
 }
 
 .modal {
@@ -838,7 +853,21 @@
   border-radius: var(--radius-xl);
   background: var(--surface-elevated);
   box-shadow: var(--shadow-lg);
-  animation: modal-in var(--duration-base) var(--ease-out);
+  /* 进场带一点回弹，让弹窗有"弹出"的分量；退场见下方 [data-state="closing"] */
+  animation: modal-in var(--duration-base) var(--ease-spring);
+}
+
+/*
+ * 退场：比进场短（fast）、用加速曲线，向下沉并缩小——与进场方向相反，空间关系一致。
+ * forwards 让元素停在终态，直到 usePresence 的定时器把它卸载。
+ */
+.modal-backdrop[data-state="closing"] {
+  pointer-events: none;
+  animation: fade-out var(--duration-fast) var(--ease-in) forwards;
+}
+
+.modal-backdrop[data-state="closing"] .modal {
+  animation: modal-out var(--duration-fast) var(--ease-in) forwards;
 }
 
 .modal h3 {
@@ -868,16 +897,17 @@
   margin-top: var(--space-5);
 }
 
-@keyframes backdrop-in {
-  from {
-    opacity: 0;
-  }
-}
-
 @keyframes modal-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.98);
+    transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-pop));
+  }
+}
+
+@keyframes modal-out {
+  to {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm)) scale(var(--motion-scale-pop));
   }
 }
 
@@ -909,6 +939,12 @@
   line-height: var(--leading-normal);
   pointer-events: auto;
   animation: toast-in var(--duration-base) var(--ease-out);
+}
+
+/* 退场：向右滑出并淡出，方向与进场一致（从哪来回哪去） */
+.toast-item[data-state="leaving"] {
+  pointer-events: none;
+  animation: toast-out var(--duration-fast) var(--ease-in) forwards;
 }
 
 .toast-item .icon {
@@ -959,7 +995,14 @@
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateX(12px);
+    transform: translateX(var(--space-3));
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(var(--space-4));
   }
 }
 
@@ -979,7 +1022,7 @@
   inset: 0;
   background: linear-gradient(90deg, transparent, var(--skeleton-sheen), transparent);
   transform: translateX(-100%);
-  animation: skeleton-sweep 1.4s infinite;
+  animation: skeleton-sweep var(--duration-loop) var(--ease-standard) infinite;
 }
 
 @keyframes skeleton-sweep {

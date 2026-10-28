@@ -286,8 +286,8 @@ export function BrandMark({ size = 22, className }: IconProps) {
       aria-hidden="true"
       focusable="false"
     >
-      <rect x="1" y="1" width="30" height="30" rx="7.5" fill="var(--accent)" />
-      <g fill="var(--text-on-accent)">
+      <rect x="1" y="1" width="30" height="30" rx="7.5" fill="var(--brand-bg)" />
+      <g fill="var(--brand-fg)">
         <rect x="7.5" y="7.9" width="17" height="4.2" rx="2.1" />
         <rect x="7.5" y="13.9" width="12.2" height="4.2" rx="2.1" />
         <rect x="7.5" y="19.9" width="7.5" height="4.2" rx="2.1" />

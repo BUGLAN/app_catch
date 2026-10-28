@@ -22,9 +22,12 @@
   flex: none;
   height: var(--titlebar-height);
   padding-left: var(--space-3);
-  background: var(--surface-glass);
-  border-bottom: 1px solid var(--border-subtle);
-  backdrop-filter: blur(18px) saturate(140%);
+  /*
+   * 实色而非毛玻璃：标题栏下面没有会滚动穿过的内容，blur 只会白白多一个合成层，
+   * 而且 WKWebView 需要 -webkit- 前缀才生效，两个平台观感还不一致。
+   */
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border);
   z-index: var(--z-titlebar);
   user-select: none;
   -webkit-app-region: drag;
@@ -37,6 +40,8 @@
  */
 [data-platform="macos"] .titlebar {
   padding-left: var(--titlebar-mac-inset);
+  /* macOS 没有自绘窗口按钮贴右边：业务按钮需要自己的右边距，否则「新建应用」会顶到窗口边缘被裁掉 */
+  padding-right: var(--space-3);
 }
 
 /* 中间留白：品牌与右侧操作之间的可拖拽缓冲 */

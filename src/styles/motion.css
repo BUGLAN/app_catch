@@ -1,0 +1,84 @@
+/* =============================================================================
+ * motion.css — 共享关键帧与动效编排
+ *
+ * 规则（与 tokens.css 第 10 节配套）：
+ *   - 只动 transform / opacity，不动 width / height / top / left（侧栏折叠是唯一例外，
+ *     它本来就要把主区推开，见 chrome.css）；
+ *   - 进场用 --ease-out（减速），退场用 --ease-in（加速）且时长更短；
+ *   - 循环动画只用于"正在进行"的状态；
+ *   - 关键帧只写 from / to 中变化的那一端，另一端回落到元素自身样式，
+ *     这样同一个关键帧能被不同的 transform 基线复用。
+ *
+ * reduced-motion 由 base.css 的全局降级统一处理（时长压到 0.01ms、只跑一次），
+ * 这里不再逐条覆盖；JS 驱动的动画（视图切换、主题淡化）由 src/lib/motion.ts 自行跳过。
+ * ========================================================================== */
+
+/* ---------- 关键帧库 ---------- */
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* 自下方轻轻浮起：列表项、面板 */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
+  }
+}
+
+/* 选中指示条：从中心纵向展开 */
+@keyframes indicator-in {
+  from {
+    transform: translateY(-50%) scaleY(0);
+  }
+}
+
+/*
+ * 运行脉冲：一圈从状态点向外扩散并淡出的光环。
+ * 只动 transform / opacity，合成层完成，不触发重绘。
+ */
+@keyframes pulse-ring {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+
+/* ---------- 列表错峰入场 ---------- */
+
+/*
+ * 每项通过内联样式拿到自己的序号 `--stagger-index`（AppList 写入），
+ * 延迟封顶 8 项：列表再长，最后一项也在 ~200ms 内到位，不会"拖着走"。
+ * 轮询刷新不会重挂载 <li>（key 稳定），所以只有首屏 / 搜索结果变化时才会播放。
+ */
+.app-list > li {
+  animation: rise-in var(--duration-base) var(--ease-out) both;
+  animation-delay: calc(min(var(--stagger-index), 8) * var(--stagger-step));
+}
+
+/* ---------- 主题切换：整屏交叉淡化（View Transitions API） ---------- */
+
+/*
+ * 由 src/lib/motion.ts 的 withViewTransition() 触发；不支持的 WebView 直接切换，
+ * 这时 base.css 里 body 的颜色过渡兜底。
+ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--duration-slow);
+  animation-timing-function: var(--ease-standard);
+}

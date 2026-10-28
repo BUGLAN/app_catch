@@ -36,6 +36,8 @@ const componentStyles: Array<[string, string]> = [
   "chrome.css",
   "primitives.css",
   "apps.css",
+  "settings.css",
+  "motion.css",
 ].map((name) => [name, readStyle(name)]);
 
 /** 全部样式表，用于跨文件的断言。 */
@@ -188,8 +190,9 @@ describe("设计 token 契约", () => {
         if (/^\s*(\/\*|\*)/.test(line) || !line.includes("!important")) {
           return;
         }
+        // 降级块包含"全局时长"与"View Transition 兜底"两段，约 20 行
         const inReducedMotion =
-          reducedMotionStart >= 0 && index >= reducedMotionStart && index < reducedMotionStart + 12;
+          reducedMotionStart >= 0 && index >= reducedMotionStart && index < reducedMotionStart + 20;
         if (!inReducedMotion) {
           offenders.push(path + ":" + (index + 1));
         }
@@ -198,6 +201,57 @@ describe("设计 token 契约", () => {
     expect(offenders, "!important 只能出现在 reduced-motion 降级里：" + offenders.join(" / ")).toEqual(
       []
     );
+  });
+
+  it("动效时长与缓动只走 token（不写裸 ms / s / ease-*）", () => {
+    for (const token of [
+      "--duration-instant",
+      "--duration-fast",
+      "--duration-base",
+      "--duration-slow",
+      "--duration-loop",
+      "--ease-out",
+      "--ease-in",
+      "--ease-spring",
+      "--stagger-step",
+    ]) {
+      expect(definedTokens, "缺少动效 token " + token).toContain(token);
+    }
+    const offenders = componentStyles.flatMap(([path, source]) =>
+      checkLines(source, path, (line) => {
+        if (!/^\s*(transition|animation)(-duration|-timing-function|-delay)?\s*:/.test(line)) {
+          return null;
+        }
+        // reduced-motion 的 0.01ms 是唯一允许的裸时长
+        if (line.includes("0.01ms")) {
+          return null;
+        }
+        // 先去掉 var(--…) 引用本身，剩下的才是可能的裸值
+        const bare = line.replace(/var\(--[\w-]+\)/g, "");
+        const raw = bare.match(/\b\d*\.?\d+m?s\b|\bease(-in|-out|-in-out)?\b|cubic-bezier|\blinear\b/);
+        return raw ? raw[0] : null;
+      })
+    );
+    expect(offenders, "动效应使用 --duration-* / --ease-* token：" + offenders.join(" / ")).toEqual([]);
+  });
+
+  it("浮层有退场动画，且退场用加速曲线、比进场短", () => {
+    const primitives = byName("primitives.css");
+    expect(primitives).toContain('.modal-backdrop[data-state="closing"]');
+    expect(primitives).toContain('.toast-item[data-state="leaving"]');
+    expect(primitives).toMatch(/modal-out var\(--duration-fast\) var\(--ease-in\)/);
+    expect(primitives).toMatch(/toast-out var\(--duration-fast\) var\(--ease-in\)/);
+    // 弹窗 / toast 组件把状态写到 data-state 上，卸载由定时器而非 animationend 决定
+    expect(dialogSource).toContain('data-state={closing ? "closing" : "open"}');
+    expect(toastSource).toContain('data-state={leaving ? "leaving" : "open"}');
+    expect(toastSource).not.toContain("onAnimationEnd");
+  });
+
+  it("列表错峰入场有封顶，主题切换走 View Transition", () => {
+    const motion = byName("motion.css");
+    expect(motion).toContain("min(var(--stagger-index), 8) * var(--stagger-step)");
+    expect(motion).toContain("::view-transition-old(root)");
+    expect(appListSource).toContain('"--stagger-index": index');
   });
 
   it("交互控件都有 hover / active / disabled 三态样式", () => {

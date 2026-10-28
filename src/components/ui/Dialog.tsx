@@ -7,6 +7,8 @@
  *   - 没有 aria-labelledby，读屏只会播报一个"对话框"；
  *   - 打开时背后的列表仍能滚动。
  *
+ * 退场：父组件用 usePresence 延迟卸载，`closing` 期间播放收起动画（见 primitives.css）。
+ *
  * 这些都属于"表现层与可访问性"，不影响任何业务流程：确认/取消仍走原来的回调。
  */
 import { useEffect, useId, useRef, type ReactNode } from "react";
@@ -22,12 +24,25 @@ interface DialogProps {
   busy?: boolean;
   /** 首焦点落在哪个元素上：默认第一个可聚焦元素。 */
   initialFocus?: "first" | "cancel";
+  /**
+   * 是否处于退场动画中（由 {@link usePresence} 提供）。
+   * 退场期间仍渲染，但 CSS 关掉指针事件并播放收起动画；业务回调已经执行完毕。
+   */
+  closing?: boolean;
 }
 
 const FOCUSABLE =
   'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-export function Dialog({ title, children, actions, onClose, busy = false, initialFocus = "first" }: DialogProps) {
+export function Dialog({
+  title,
+  children,
+  actions,
+  onClose,
+  busy = false,
+  initialFocus = "first",
+  closing = false,
+}: DialogProps) {
   const titleId = useId();
   const bodyId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -97,9 +112,10 @@ export function Dialog({ title, children, actions, onClose, busy = false, initia
   return (
     <div
       className="modal-backdrop"
+      data-state={closing ? "closing" : "open"}
       onMouseDown={(event) => {
         // 只有点在遮罩本身（不是弹窗内部）才关闭
-        if (event.target === event.currentTarget && !busy) {
+        if (event.target === event.currentTarget && !busy && !closing) {
           onClose();
         }
       }}

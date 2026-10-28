@@ -67,7 +67,6 @@
 
 .app-item.is-selected {
   background: var(--surface-selected);
-  border-color: var(--border);
 }
 
 /* 选中项用左侧强调条再强化一次（不只依赖背景色差） */
@@ -81,6 +80,8 @@
   border-radius: var(--radius-full);
   background: var(--accent);
   transform: translateY(-50%);
+  /* 切换选中项时指示条从中心纵向展开，带一点回弹 */
+  animation: indicator-in var(--duration-base) var(--ease-spring);
 }
 
 .app-item-select {
@@ -125,6 +126,20 @@
 
 .app-item-dot-running {
   background: var(--success);
+}
+
+/*
+ * 运行脉冲：折叠态下圆点是唯一的状态信号，一圈缓慢扩散的光环表达"正在运行"。
+ * 只用在 running 上（其余状态是静止的结果），慢节奏 + 低透明度，不抢注意力。
+ * reduced-motion 下全局降级为只跑一次、瞬间结束（终态透明），等于不显示。
+ */
+.app-item-dot-running::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-full);
+  background: var(--success);
+  animation: pulse-ring var(--duration-pulse) var(--ease-out) infinite;
 }
 
 .app-item-dot-crashed {
@@ -182,11 +197,34 @@
  * 标签整体作为一个裁剪容器：放不下时裁掉末尾，而不是把每个标签都压成 "py…"。
  * 单个标签最多 92px，超出自身省略。
  */
+/*
+ * 侧栏里的标签是"次要说明"而不是可操作的筹码：去掉底色，用 · 串成一行灰字，
+ * 像 Finder / 邮件侧栏的副标题。原来的胶囊在 184–220px 宽度下会被状态徽标切成 "electror"。
+ */
 .app-item-meta .tag {
-  flex: 0 0 auto;
-  max-width: 92px;
+  flex: none;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 放不下时整行在右端淡出，而不是把每个标签各自截成 "electror · nod…" */
+.app-item-meta {
+  mask-image: linear-gradient(to right, black calc(100% - var(--space-4)), transparent);
+}
+
+.app-item-meta .tag + .tag::before {
+  content: "·";
+  margin-right: var(--space-1);
+  color: var(--text-disabled);
+}
+
+/* 「未运行」是默认状态：不占位，只有运行 / 退出 / 崩溃这些"值得看一眼"的状态才出徽标 */
+.app-item[data-state="idle"] .app-item-status .badge {
+  display: none;
 }
 
 /*
