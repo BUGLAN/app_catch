@@ -5,7 +5,7 @@
   "identifier": "com.appcatch.launcher",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:15173",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },

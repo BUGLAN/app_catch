@@ -39,7 +39,7 @@
 # 安装前端依赖（首次必做）
 pnpm install
 
-# 开发模式：启动 Vite(5173) 并拉起 Tauri 窗口
+# 开发模式：启动 Vite(15173) 并拉起 Tauri 窗口
 pnpm tauri dev
 
 # 仅构建前端产物（tsc 类型检查 + vite build，输出到 dist/）
@@ -56,7 +56,7 @@ cargo test --workspace
 pnpm tauri build
 ```
 
-> `pnpm tauri dev` / `pnpm tauri build` 依赖 `dist/` 与 Vite 端口 5173（`vite.config.ts` 中 `strictPort` 已锁定，避免端口漂移导致白屏）。
+> `pnpm tauri dev` / `pnpm tauri build` 依赖 `dist/` 与 Vite 端口 15173（`vite.config.ts` 中 `strictPort` 已锁定，避免端口漂移导致白屏）。
 
 ## 打包（Windows）
 
@@ -135,7 +135,7 @@ E:\tmp\app_catch_install\app-catch.exe
    pnpm tauri dev
    ```
 
-   该命令会先跑 Vite（http://localhost:5173），再编译 Rust 并拉起 Tauri 窗口（1024×720，深色主题）。
+   该命令会先跑 Vite（http://localhost:15173），再编译 Rust 并拉起 Tauri 窗口（1024×720，深色主题）。
    首次编译 Rust 依赖需要几分钟，之后是增量编译。
 
 4. **数据位置**：应用配置与会话日志默认写在 `~/.app_catch`；要换位置，启动前设置环境变量：

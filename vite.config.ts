@@ -12,7 +12,7 @@ const pkg = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8"),
 ) as { version: string };
 
-// Tauri 2 开发期约定：devUrl 固定 http://localhost:5173，
+// Tauri 2 开发期约定：devUrl 固定 http://localhost:15173，
 // 因此这里锁死端口（strictPort），避免被占用后随机漂移导致 Tauri 白屏。
 export default defineConfig({
   plugins: [react()],
@@ -21,7 +21,7 @@ export default defineConfig({
   },
   clearScreen: false,
   server: {
-    port: 5173,
+    port: 15173,
     strictPort: true,
     host: "127.0.0.1",
   },

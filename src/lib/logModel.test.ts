@@ -225,7 +225,7 @@ describe("classifyOutputLevel 的边界", () => {
   it.each([
     ["panic", "thread panicked at ..."],
     ["uncaught", "Uncaught TypeError: x is not a function"],
-    ["EADDRINUSE", "listen EADDRINUSE: address already in use :::5173"],
+    ["EADDRINUSE", "listen EADDRINUSE: address already in use :::15173"],
     ["ERR!", "ERR! code ELIFECYCLE"],
     ["cannot find", "Cannot find module 'electron'"],
     ["fatal", "fatal: not a git repository"],

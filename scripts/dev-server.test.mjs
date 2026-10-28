@@ -12,7 +12,7 @@ const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url),
 const tauriConfig = JSON.parse(
   readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 );
-const devPort = Number(new URL(tauriConfig.build.devUrl).port || 5173);
+const devPort = Number(new URL(tauriConfig.build.devUrl).port || 15173);
 
 function isPortOpen(port) {
   return new Promise((resolve) => {

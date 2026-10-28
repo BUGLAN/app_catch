@@ -7,10 +7,10 @@ import { createServer, version as viteVersion } from "vite";
 /**
  * Windows 下 Tauri CLI 的 beforeDevCommand 只启动一个 cmd 子进程，CLI 被
  * pnpm/Node 的 job 提前终止时不会执行自己的进程树清理逻辑。若这里再
- * spawn 一个独立的 vite 进程，它会变成孤儿并继续占用 5173。
+ * spawn 一个独立的 vite 进程，它会变成孤儿并继续占用 15173。
  *
  * 因此本启动器不再把 Vite 当子进程，而是直接在当前进程里创建 dev server：
- * 5173 的监听者就是 Tauri beforeDevCommand 的进程本身，不存在需要额外
+ * 15173 的监听者就是 Tauri beforeDevCommand 的进程本身，不存在需要额外
  * 追踪的 Vite 子进程。收到 Ctrl+C 或 Tauri 的 stdin 管道关闭时，调用
  * server.close() 停止 watcher / WebSocket / esbuild，然后退出。
  */
