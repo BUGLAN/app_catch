@@ -79,6 +79,19 @@ jobs:
             -exec cp {} bundle-out/ \;
           # .sig 签名件：合并 latest.json 的原料
           find "$base" -name '*.sig' -exec cp {} updater-out/ \;
+          # macOS 的更新包在 Tauri 里固定叫 app_catch.app.tar.gz，两个矩阵任务同名：
+          # download-artifact 的 merge-multiple 会让它们互相覆盖，release 里最终只剩一份，
+          # 而 latest.json 里两套签名各指各的 —— 另一套架构更新时必然签名校验失败。
+          # 这里按架构改名（签名件同步改），下载地址由签名件文件名推出，于是各指各的资产。
+          mac_arch=""
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) mac_arch="aarch64" ;;
+            x86_64-apple-darwin) mac_arch="x64" ;;
+          esac
+          if [ -n "$mac_arch" ]; then
+            ( cd bundle-out && mv -f app_catch.app.tar.gz "app_catch_${mac_arch}.app.tar.gz" )
+            ( cd updater-out && mv -f app_catch.app.tar.gz.sig "app_catch_${mac_arch}.app.tar.gz.sig" )
+          fi
           echo "--- bundle-out ---"; ls -l bundle-out;
           echo "--- updater-out ---"; ls -l updater-out;
 

@@ -132,6 +132,28 @@ describe("mergeUpdaterManifests", () => {
     );
   });
 
+  it("macOS 两个架构各用自己的更新包（发布流程按架构改过名）", async () => {
+    /*
+     * release.yml 会把 app_catch.app.tar.gz 改名成 app_catch_<arch>.app.tar.gz：
+     * 两个矩阵任务同名文件在 merge-multiple 下载时会互相覆盖，
+     * 若两套签名指向同一个资产，另一套架构的更新必然签名校验失败。
+     */
+    const inputs = await makeInputs({
+      "aarch64-apple-darwin": ["app_catch_aarch64.app.tar.gz.sig"],
+      "x86_64-apple-darwin": ["app_catch_x64.app.tar.gz.sig"],
+    });
+    const manifest = await mergeUpdaterManifests({ ...BASE, inputsDir: inputs });
+    expect(manifest.platforms["darwin-aarch64"].url).toBe(
+      "https://github.com/BUGLAN/app_catch/releases/download/v0.2.0/app_catch_aarch64.app.tar.gz"
+    );
+    expect(manifest.platforms["darwin-x86_64"].url).toBe(
+      "https://github.com/BUGLAN/app_catch/releases/download/v0.2.0/app_catch_x64.app.tar.gz"
+    );
+    expect(manifest.platforms["darwin-aarch64"].url).not.toBe(
+      manifest.platforms["darwin-x86_64"].url
+    );
+  });
+
   it("没有 updater-* 目录时给出可读错误", async () => {
     root = await mkdtemp(join(tmpdir(), "updater-manifest-"));
     await expect(mergeUpdaterManifests({ ...BASE, inputsDir: root })).rejects.toThrow(
