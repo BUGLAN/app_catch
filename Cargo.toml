@@ -3,12 +3,12 @@ members = ["crates/launcher-core", "src-tauri"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.77.2"
 license = "MIT"
 authors = ["buglan"]
-description = "app_catch: developer-oriented desktop app launcher (M0 skeleton)"
+description = "app_catch: developer-oriented desktop app launcher"
 
 # 公共依赖在此统一声明，成员 crate 用 "<dep>.workspace = true" 引用，避免版本漂移
 [workspace.dependencies]
