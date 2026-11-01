@@ -140,10 +140,14 @@ jobs:
 
       - name: 提取 tag 说明为 Release 正文
         run: |
+          # actions/checkout 在 tag 事件下用 "+<commit>:refs/tags/<tag>" 拉取，
+          # 会把 annotated tag 覆盖成指向提交的轻量 ref，%(contents) 于是变成提交信息。
+          # 这里强制按 tag 引用再取一次，拿回真正的 tag 对象与说明。
+          git fetch --no-tags --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' > RELEASE_BODY.md
-          # 轻量 tag / 空说明的兜底
+          # 轻量 tag / 空说明的兜底：退回提交信息
           if [ ! -s RELEASE_BODY.md ]; then
-            echo "Release ${GITHUB_REF_NAME}" > RELEASE_BODY.md
+            git log -1 --pretty=%B > RELEASE_BODY.md
           fi
 
       - name: 合并各平台签名为 latest.json
