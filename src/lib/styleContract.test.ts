@@ -354,16 +354,16 @@ describe("组件层的可访问性契约", () => {
     // 拖拽交给 Tauri 的 window 插件；自己再绑 onDoubleClick 会切两次
     expect(titlebarSource).toContain('data-tauri-drag-region="deep"');
     expect(titlebarSource).not.toContain("onDoubleClick");
-    // 窗口按钮只出现在 Windows/Linux；macOS 由 CSS 隐藏并让系统画红黄绿
+    // 窗口按钮三端统一自绘：macOS 的红黄绿由 Rust 侧隐藏，CSS 不能再按平台藏掉自绘按钮
     expect(windowControlsSource).toContain("最小化");
     expect(windowControlsSource).toContain("toggleMaximize");
     expect(windowControlsSource).toContain("windowApi.minimize");
     expect(windowControlsSource).toContain("windowApi.close");
     expect(windowControlsSource).toContain("onMaximizedChange");
     const chrome = byName("chrome.css");
-    expect(chrome).toContain('[data-platform="macos"] .titlebar');
-    expect(chrome).toContain("--titlebar-mac-inset");
-    expect(chrome).toContain('[data-platform="macos"] .window-controls');
+    expect(chrome).not.toContain('[data-platform="macos"] .titlebar');
+    expect(chrome).not.toContain("--titlebar-mac-inset");
+    expect(chrome).not.toContain('[data-platform="macos"] .window-controls');
     expect(chrome).toContain("-webkit-app-region: drag");
     expect(chrome).toContain("no-drag");
     expect(chrome).toContain(".window-control-close:hover");

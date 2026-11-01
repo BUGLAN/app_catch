@@ -12,9 +12,8 @@
  *   `data-theme-mode="system"` 表示跟随系统（此时 data-theme 已是解析后的结果）。
  *
  * 跨平台：
- *   `data-platform="windows|macos|linux"` 写在应用根节点上，用于区分标题栏布局：
- *   macOS 需要给左上角红黄绿按钮留出 `--titlebar-mac-inset` 的安全区，
- *   且不渲染自绘窗口按钮（见 src/styles/chrome.css）。
+ *   `data-platform="windows|macos|linux"` 写在应用根节点上。标题栏三端同一套布局：
+ *   macOS 的系统红黄绿由 Rust 侧隐藏，窗口按钮统一自绘（见 src/styles/chrome.css）。
  *
  * 所有前景色都标注了对实际背景的 WCAG 对比度（AA 正文 4.5:1，大字与非文 3:1）。
  * 改颜色前先跑 `.e2e/ui-audit/contrast-check.mjs` 复核。
@@ -215,12 +214,6 @@
 
   /* ---------- 11. 尺寸 ---------- */
   --titlebar-height: 48px;
-  /*
-   * macOS 左上角红黄绿安全区。
-   * 三个按钮从 x=18 起、各 14px、间距 6px，右缘约 72px；
-   * 再留出与 macOS 工具栏一致的 ~20px 呼吸距离 → 92px。原来的 80px 会让徽标贴着绿灯。
-   */
-  --titlebar-mac-inset: 92px;
   --window-control-width: 46px;
   --window-control-height: 32px;
 

@@ -2,13 +2,11 @@
  * 平台识别：只用于"标题栏长什么样"，不参与任何业务判断。
  *
  * 为什么要自己识别而不是等 Rust 传：
- * - 首帧就要决定 macOS 是否给红黄绿留安全区、是否渲染自绘窗口按钮，
- *   等一次 IPC 会先闪一帧错位布局；
+ * - 首帧就要决定快捷键文案（⌘N / Ctrl+N），等一次 IPC 会先闪一帧错的提示；
  * - WebView 的 UA 稳定包含系统名（Windows NT / Macintosh / X11），足够可靠。
  *
- * 结果写在 `<html data-platform>` 上，CSS 用 `[data-platform="macos"]` 区分：
- * - macos：预留 `--titlebar-mac-inset`，不显示自绘窗口按钮；
- * - windows / linux：自绘最小化 / 最大化 / 关闭。
+ * 结果写在 `<html data-platform>` 上。标题栏三端同构：macOS 的系统红黄绿由 Rust 侧隐藏，
+ * 最小化 / 最大化 / 关闭一律自绘。
  */
 
 /** 平台标识（写进 `data-platform` 的取值）。 */
@@ -27,11 +25,6 @@ export function detectPlatform(): Platform {
     return "linux";
   }
   return "windows";
-}
-
-/** macOS 需要给原生红黄绿按钮让位，不渲染自绘按钮。 */
-export function usesNativeWindowControls(platform: Platform): boolean {
-  return platform === "macos";
 }
 
 /**

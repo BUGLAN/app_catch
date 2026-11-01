@@ -1,10 +1,11 @@
 /**
  * 窗口控制按钮组：最小化 / 最大化（还原）/ 关闭。
  *
- * 跨平台：
- * - Windows / Linux：渲染三个自绘按钮（主进程侧 `decorations: false`）；
- * - macOS：`display: none`（CSS 里按 `[data-platform="macos"]` 隐藏），
- *   红黄绿由系统绘制。DOM 仍保留，是为了让键盘快捷键与读屏结构在两端一致。
+ * 跨平台：三端都渲染这三个自绘按钮，样式完全一致。
+ * - Windows / Linux：主进程侧 `decorations: false`，标题栏整条自绘；
+ * - macOS：保留系统装饰（圆角 / 阴影 / 边缘缩放），但系统红黄绿由 Rust 侧隐藏
+ *   （`src-tauri/src/window.rs::hide_native_traffic_lights`），这里接管它们的职责。
+ *   「最大化」在 macOS 上对应窗口缩放（zoom），不进入全屏。
  *
  * 图标跟随最大化状态：状态来自两处 ——
  *   1. 挂载时查一次 `is_maximized`（刷新页面时窗口可能已经是最大化）；

@@ -16,16 +16,16 @@
 | 抽屉两段划分 | 应用列表 / 底部主题·设置·宿主状态 | 顶部原本只有一个折叠按钮独占一行；底部状态点同时解决了"是否连着 Tauri"的疑问 |
 | 折叠入口 | 只有右边缘热区（拖窄吸附 / Enter 切换），标题栏不放开关 | 宽度已经能拖，再挂一个开关等于同一个动作两个入口，还挤掉搜索框的位置；标题栏只留"品牌 + 搜索 + 新建 + 窗口控制" |
 | 抽屉折叠态交互 | 图标 + portal tooltip | 折叠后 56px 放不下文字，tooltip 是名称的唯一出口 |
-| macOS 安全区宽度 | 92px；`trafficLightPosition` = (18, 26) | 真机实测：红黄绿右缘约 72px，80px 会让徽标贴着绿灯。y 与按钮中心的关系实测为「中心 ≈ y − 2.5」，26 使其与 48px 标题栏中线对齐 |
+| macOS 窗口按钮 | 隐藏系统红黄绿，与 Windows 共用自绘按钮 | 两端标题栏同构、观感统一；只隐藏按钮而不去掉 decorations，保住 macOS 窗口的圆角、阴影与边缘缩放 |
 
 ## 1. 文件结构
 
 ```text
 src-tauri/
 ├── tauri.conf.json            主配置：decorations:false（Windows/Linux 无边框）
-├── tauri.macos.conf.json      macOS 覆盖：titleBarStyle:Overlay + 红黄绿位置
+├── tauri.macos.conf.json      macOS 覆盖：titleBarStyle:Overlay（红黄绿由 window.rs 隐藏）
 ├── capabilities/default.json  core:default + core:window:allow-start-dragging
-├── src/window.rs              六个窗口命令 + 最大化状态事件
+├── src/window.rs              六个窗口命令 + 最大化状态事件 + macOS 隐藏红黄绿
 ├── src/lib.rs                 注册命令、setup 挂监听
 └── tests/window_config.rs     平台配置的合并结果与权限契约（4 个测试）
 
@@ -68,7 +68,7 @@ src/
        └─────────────── data-tauri-drag-region="deep" ─────────────────────┘
 ```
 
-- logo 在两个平台上都是第一位（macOS 上位于红黄绿之后），名称紧贴其后；标题栏里**没有**侧栏开关（见 0 节"折叠入口"）。
+- logo 在两个平台上都是第一位，名称紧贴其后；标题栏里**没有**侧栏开关（见 0 节"折叠入口"）。
 - 搜索框在整条标题栏里**水平居中**：绝对定位 `left: 50%` + `translateX(-50%)`，宽度 `clamp(160px, 34vw, 360px)`。
   让它参与 flex 分配行不通——左侧品牌与右侧「新建 + 窗口按钮」宽度不等，挤出来的"居中"会整体偏左（实测 1440px 下偏 452px）。
 - 新建是图标按钮（+），名称与快捷键（⌘N / Ctrl+N）在 `title` / `aria-label` / `aria-keyshortcuts` 里；
@@ -120,8 +120,7 @@ Tauri 的 `window` 插件会自动注入一段脚本，读取 `data-tauri-drag-r
 | `decorations` | `false` | `true` |
 | `titleBarStyle` | — | `"Overlay"`（tao 映射为 titlebar_transparent + fullsize_content_view） |
 | `hiddenTitle` | — | `true`（不显示标题文字） |
-| `trafficLightPosition` | — | `{x: 18, y: 21}` |
-| 窗口按钮 | 前端自绘 | 系统红黄绿 |
+| 窗口按钮 | 前端自绘 | 前端自绘（系统红黄绿由 `window.rs::hide_native_traffic_lights` 隐藏） |
 
 平台配置是 **JSON Merge Patch（RFC 7396）**：`app.windows` 是数组，整体替换而非逐项合并，
 所以 macOS 配置里必须重复声明 label / 尺寸，测试会校验两者一致。
@@ -134,13 +133,9 @@ Windows 无边框后仍可缩放：tao 对未最大化的无边框窗口保留�
 
 ### 3.2 前端 CSS
 
-```css
-/* macOS：给红黄绿让出 92px 安全区（padding 而非 margin，安全区本身仍可拖动） */
-[data-platform="macos"] .titlebar { padding-left: var(--titlebar-mac-inset); }
-
-/* macOS：不显示自绘窗口按钮（DOM 保留，读屏与快捷键结构两端一致） */
-[data-platform="macos"] .window-controls { display: none; }
-```
+标题栏样式三端共用，不再按平台区分：macOS 不留左侧安全区，也不隐藏自绘窗口按钮。
+红黄绿在 setup 时隐藏，并在 `Resized` / `Focused` 后再隐藏一次（AppKit 进出全屏后可能把它们放回来）。
+macOS 上「最大化」对应窗口缩放（zoom），不进入原生全屏。
 
 `data-platform` 由 `index.html` 的内联脚本在首帧写入（UA 判断），`src/lib/platform.ts` 再幂等地写一次。
 

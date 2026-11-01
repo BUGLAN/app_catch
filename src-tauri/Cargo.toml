@@ -27,6 +27,10 @@ launcher-core = { workspace = true }
 # 图标抓取放进 spawn_blocking：Shell API 可能慢，不能占住 tokio worker
 tokio = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# 隐藏系统红黄绿：窗口按钮统一由前端自绘（见 src/window.rs::hide_native_traffic_lights）
+objc2-app-kit = { workspace = true }
+
 [dev-dependencies]
 # 命令层测试用临时目录隔离 APP_CATCH_HOME
 tempfile = { workspace = true }

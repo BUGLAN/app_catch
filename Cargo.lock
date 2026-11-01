@@ -52,6 +52,7 @@ name = "app-catch"
 version = "0.2.1"
 dependencies = [
  "launcher-core",
+ "objc2-app-kit",
  "serde",
  "serde_json",
  "tauri",

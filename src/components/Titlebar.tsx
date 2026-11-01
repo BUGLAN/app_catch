@@ -20,9 +20,8 @@
  *   这里额外给它们标 `-webkit-app-region: no-drag`（Electron 语义，Tauri 下无副作用）。
  *
  * macOS：
- *   `[data-platform="macos"] .titlebar { padding-left: var(--titlebar-mac-inset) }`
- *   让出左上角红黄绿安全区；`[data-platform="macos"] .window-controls { display:none }`
- *   隐藏自绘按钮，位置与尺寸全部交给系统。
+ *   系统红黄绿已由 Rust 侧隐藏，标题栏与 Windows 完全同构：
+ *   左侧不留安全区，右侧同样是自绘的最小化 / 最大化 / 关闭。
  *
  * 主题切换放在侧栏底部（设置区）而不是这里：
  *   标题栏右侧留给"业务操作 + 窗口控制"，主题属于偏好设置，

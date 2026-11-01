@@ -73,3 +73,12 @@ tauri-build = { version = "2" }
 tauri-plugin-updater = "2"
 # 更新安装完成后 relaunch（重启进新版本）
 tauri-plugin-process = "2"
+# macOS：隐藏系统红黄绿（NSWindow.standardWindowButton），与 tao 用的是同一版本，不额外引入新依赖
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSButton",
+    "NSControl",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }

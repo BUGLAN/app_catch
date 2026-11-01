@@ -15,7 +15,7 @@ M2 把 app_catch 从「M0 状态页」变成可用的桌面启动器：左侧应
 - **状态不靠颜色单独编码**：徽标同时用形状（实心点 / 方块 / 菱形）+ 文本区分。
 - **响应式**：1180 / 980 / 760 / 480 / 360 五档；760 以下侧栏转为图标条并保持单列主区。
   任意宽度下都不出现文档级横向滚动。
-- **窗口外壳**：Windows/Linux 无边框 + 前端自绘标题栏；macOS 保留红黄绿（`titleBarStyle: Overlay`）。
+- **窗口外壳**：Windows/Linux 无边框 + 前端自绘标题栏；macOS 保留系统窗口外观（`titleBarStyle: Overlay`），但隐藏红黄绿，窗口按钮与 Windows 一样自绘。
   详见 [UI-SHELL.md](UI-SHELL.md)。
 - **对比度**：正文 ≥ 4.5:1，控件边界 ≥ 3:1（实测值见 UI-AUDIT.md）。
 - **动效降级**：`prefers-reduced-motion` 下所有过渡降到 0.01ms；`forced-colors` 下补焦点框与边框。

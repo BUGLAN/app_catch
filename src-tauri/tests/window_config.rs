@@ -73,30 +73,23 @@ fn base_config_disables_native_decorations_for_custom_titlebar() {
 }
 
 #[test]
-fn macos_patch_keeps_traffic_lights_with_overlay_style() {
+fn macos_patch_keeps_native_frame_with_overlay_style() {
     let windows = merged_windows(Some("tauri.macos.conf.json"));
     let main = windows.first().expect("必须覆盖主窗口配置");
 
     assert!(
         main.decorations,
-        "macOS 必须保留系统装饰，否则红黄绿按钮会消失"
+        "macOS 必须保留系统装饰，否则窗口会丢掉圆角与原生边缘缩放（红黄绿由 window.rs 隐藏）"
     );
     assert_eq!(
         main.title_bar_style,
         tauri::utils::TitleBarStyle::Overlay,
         "需要 hiddenInset 语义：透明标题栏 + 内容延伸到标题栏下"
     );
-    assert!(main.hidden_title, "隐藏窗口标题文字，只保留红黄绿按钮");
-
-    let position = main
-        .traffic_light_position
-        .as_ref()
-        .expect("必须给红黄绿按钮定坐标，否则会压在自绘品牌区上");
+    assert!(main.hidden_title, "隐藏窗口标题文字，标题栏完全由前端绘制");
     assert!(
-        position.x > 0.0 && position.y > 0.0,
-        "红黄绿按钮坐标应为正数，实际 ({}, {})",
-        position.x,
-        position.y
+        main.traffic_light_position.is_none(),
+        "红黄绿已被隐藏，不应再给它定坐标（Tauri 会在每次缩放时重新摆放按钮）"
     );
 }
 

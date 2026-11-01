@@ -2,9 +2,9 @@
  * chrome.css — 应用外壳：自绘标题栏 + 窗口控制 + 左侧抽屉（rail）
  *
  * 跨平台差异全部由 [data-platform] 承担（见 src/lib/platform.ts）：
- *   - macos   ：标题栏左侧留出 --titlebar-mac-inset 的红黄绿安全区，不渲染自绘按钮
- *   - windows ：右上角自绘 最小化 / 最大化 / 关闭
- *   - linux   ：同 windows（无边框，自绘按钮）
+ *   - 三个平台的标题栏完全一致：右上角自绘 最小化 / 最大化 / 关闭
+ *   - macOS 的系统红黄绿由 Rust 侧隐藏（src-tauri/src/window.rs），这里不需要让安全区
+ *   - [data-platform] 现在只影响快捷键文案（⌘N / Ctrl+N）
  *
  * 拖拽：
  *   Tauri 的 window 插件会读 data-tauri-drag-region（"deep" = 子树任意位置都能拖），
@@ -32,17 +32,6 @@
   z-index: var(--z-titlebar);
   user-select: none;
   -webkit-app-region: drag;
-}
-
-/*
- * macOS：红黄绿由系统画在左上角，这里让出 80px 安全区。
- * 用 padding 而不是 margin：安全区本身仍属于拖拽区，
- * 压在红黄绿旁边拖动窗口的行为与原生一致。
- */
-[data-platform="macos"] .titlebar {
-  padding-left: var(--titlebar-mac-inset);
-  /* macOS 没有自绘窗口按钮贴右边：业务按钮需要自己的右边距，否则「新建应用」会顶到窗口边缘被裁掉 */
-  padding-right: var(--space-3);
 }
 
 /* 中间留白：品牌与右侧操作之间的可拖拽缓冲 */
@@ -251,11 +240,6 @@
   height: var(--titlebar-height);
   margin-left: var(--space-1);
   -webkit-app-region: no-drag;
-}
-
-/* macOS 用原生红黄绿：DOM 保留（快捷键/读屏一致），视觉隐藏 */
-[data-platform="macos"] .window-controls {
-  display: none;
 }
 
 .window-control {
