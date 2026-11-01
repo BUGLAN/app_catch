@@ -2,12 +2,11 @@
 /**
  * 安装版应用的 GUI 端到端驱动（CDP）。
  *
- * 为什么需要它：M5 的验收要点是「用打包后的安装版应用跑一遍闭环」，
- * 而安装版没有 dev 工具链可用。WebView2 自带 Chrome DevTools Protocol，
- * 只要在启动安装版时注入 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>，
- * 就能用本脚本在真实 UI 上点击「启动 / 停止」，走的是和人工操作完全一样的命令层路径。
+ * 用途：在真实 UI 上点击「启动 / 停止」，走与人工操作完全一样的命令层路径，
+ * 用来验证打包后的安装版。WebView2 自带 Chrome DevTools Protocol，
+ * 启动安装版前注入 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port> 即可连上。
  *
- * 用法（先启动安装版，见 docs/E2E.md）：
+ * 用法（先构建并启动安装版）：
  *   node scripts/e2e-installed-gui.mjs --port 9223 --app charmap --timeout 30
  *
  * 参数：

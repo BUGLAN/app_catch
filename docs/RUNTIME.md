@@ -1,6 +1,6 @@
 # 会话运行时（RUNTIME）
 
-本文档面向 **M2 GUI 对接**：说明会话的生命周期状态机、`SessionManager` 公开 API、退出分类规则，以及日志轮转与溢出策略。
+本文说明会话的生命周期状态机、`SessionManager` 公开 API、退出分类规则，以及日志轮转与溢出策略。
 
 事件字段的逐字段定义见 [SESSION_FORMAT.md](./SESSION_FORMAT.md)，本文只讲「怎么用、为什么这样设计」。
 
@@ -159,7 +159,7 @@ pub struct ExitInfo {
 }
 ```
 
-### 典型用法（M2 对接）
+### 典型用法
 
 ```rust
 use std::sync::Arc;
@@ -214,7 +214,7 @@ for snapshot in manager.list_active().await {
 **为什么不用 lossy 兜底**：`from_utf8_lossy` 把每个非法字节替换成 U+FFFD，对 GBK 中文就是
 当场销毁原始信息——`d6 d0 ce c4 b2 e2 ca d4`（「中文测试」）会变成一串替换字符，事后无法还原。
 Windows 中文环境下大量 Python 项目（GPT-SoVITS、VITS、字幕工具）默认 cp936 输出，
-用 lossy 兜底等于把这些会话的日志全部损坏，直接违反「只凭会话文件即可完整还原输出」的验收标准。
+用 lossy 兜底等于把这些会话的日志全部损坏，直接违反「只凭会话文件即可完整还原输出」的设计目标。
 因此 lossy 只在**真正无法解码**时发生，并且必定带上 `encoding: "lossy"`，绝不静默损坏。
 
 **为什么回退 GBK 而不是 cp1252**：GBK/GB18030 是简体中文环境的实际默认代码页，解出的是正确汉字；
@@ -225,7 +225,7 @@ Linux/macOS 暂无平台回退编码（系统默认 UTF-8），会直接进入 l
 
 ## 状态采集（status 事件）
 
-需求基线要求「新增状态项不改核心流程」。做法是把每个状态项做成一个独立的 `StatusProbe`，
+状态采集遵循「新增状态项不改核心流程」。做法是把每个状态项做成一个独立的 `StatusProbe`，
 由 `CompositeProbe` 组合：
 
 ```text
@@ -330,4 +330,3 @@ OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
 
 - [SESSION_FORMAT.md](./SESSION_FORMAT.md)：JSONL 事件格式、轮转分片命名、overflow 与 recover 语义
 - [CONFIG.md](./CONFIG.md)：应用配置 TOML 格式
-- [REQUIREMENTS.md](./REQUIREMENTS.md)：需求与决策基线

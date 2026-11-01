@@ -38,7 +38,7 @@ name = "session_demo"
 path = "examples/session_demo.rs"
 
 # 真实项目端到端验收：起真实进程 -> 采集事件 -> 尽力抓图标 -> 停止并复查进程树回收
-# 用法见 docs/E2E.md
+# 用法见该示例文件头部的注释
 [[example]]
 name = "e2e_session"
 path = "examples/e2e_session.rs"

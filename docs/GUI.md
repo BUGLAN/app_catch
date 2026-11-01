@@ -1,11 +1,8 @@
-# GUI（M2）：界面结构、命令层 API 与轮询策略
+# 界面结构、命令层 API 与轮询策略
 
-M2 把 app_catch 从「M0 状态页」变成可用的桌面启动器：左侧应用列表、右侧应用详情与会话详情，
-支持新建/编辑/删除应用、启动/停止/重启会话，并把会话输出以实时日志流的形式呈现。
+界面分左侧应用列表、右侧应用详情与会话详情，支持新建/编辑/删除应用、启动/停止/重启会话，会话输出以实时日志流呈现。
 
-> 前置阅读：[docs/RUNTIME.md](RUNTIME.md)（会话生命周期）、[docs/SESSION_FORMAT.md](SESSION_FORMAT.md)（JSONL 事件格式）、[docs/CONFIG.md](CONFIG.md)（应用配置 TOML）。
->
-> 视觉规范与设计 token 见 [docs/UI-AUDIT.md](UI-AUDIT.md)（含完整走查清单、修复记录与实测验收数据）。
+> 前置阅读：[RUNTIME.md](RUNTIME.md)（会话生命周期）、[SESSION_FORMAT.md](SESSION_FORMAT.md)（JSONL 事件格式）、[CONFIG.md](CONFIG.md)（应用配置 TOML）。
 
 ## 0. 视觉与交互约定（摘要）
 
@@ -16,8 +13,7 @@ M2 把 app_catch 从「M0 状态页」变成可用的桌面启动器：左侧应
 - **响应式**：1180 / 980 / 760 / 480 / 360 五档；760 以下侧栏转为图标条并保持单列主区。
   任意宽度下都不出现文档级横向滚动。
 - **窗口外壳**：Windows/Linux 无边框 + 前端自绘标题栏；macOS 保留系统窗口外观（`titleBarStyle: Overlay`），但隐藏红黄绿，窗口按钮与 Windows 一样自绘。
-  详见 [UI-SHELL.md](UI-SHELL.md)。
-- **对比度**：正文 ≥ 4.5:1，控件边界 ≥ 3:1（实测值见 UI-AUDIT.md）。
+- **对比度**：正文 ≥ 4.5:1，控件边界 ≥ 3:1。
 - **动效降级**：`prefers-reduced-motion` 下所有过渡降到 0.01ms；`forced-colors` 下补焦点框与边框。
 
 ## 1. 界面结构
@@ -47,13 +43,13 @@ M2 把 app_catch 从「M0 状态页」变成可用的桌面启动器：左侧应
 ```
 
 抽屉可折叠（56px 图标态，名称走 tooltip）、可拖拽右边缘调宽（56–320，默认 220），
-宽度与折叠状态持久化在 `localStorage`。详见 [UI-SHELL.md](UI-SHELL.md)。
+宽度与折叠状态持久化在 `localStorage`。
 
 ### 1.1 应用列表项
 
 | 元素 | 说明 |
 | --- | --- |
-| 图标 | **M3 起是真实图标**（30×30）：由 `AppIcon` 组件渲染，数据来自 `get_app_icon` 命令的 data URL；抓不到时用内置默认图；连默认图都取不到（非 Tauri 环境）才退回名称首字块（`initialOf`）。详见 [docs/ICONS.md](ICONS.md) |
+| 图标 | 真实图标（30×30）：由 `AppIcon` 组件渲染，数据来自 `get_app_icon` 命令的 data URL；抓不到时用内置默认图；连默认图都取不到（非 Tauri 环境）才退回名称首字块（`initialOf`）。详见 [ICONS.md](ICONS.md) |
 | 名称 | 超长省略，hover 显示完整名称 |
 | 标签 | 最多显示 3 个；无标签显示虚线「无标签」 |
 | 状态徽标 | `未运行` / `运行中`（多实例显示 ×N）/ `已退出` / `已崩溃`，由该应用的活跃会话聚合得出 |
@@ -206,19 +202,16 @@ hover 提示「该行原始字节既不是合法 UTF-8 也无法按 GBK 解码�
 | `get_capture_config` | — | `CaptureConfig` | 时长字段以毫秒为单位 |
 | `set_capture_config` | `config: CaptureConfig` | `CaptureConfig` | **有会话在跑时返回 `conflict`**：重建管理器会丢掉会话表 |
 | `recover_sessions` | — | `BootReport` | `{ home, recovered[], error }`，启动期恢复残留会话 |
-| `core_version` / `app_version` | — | `string` | M0 链路自检，保留兼容 |
+| `core_version` / `app_version` | — | `string` | 链路自检，保留兼容 |
 
-### 2.5 图标（M3）
+### 2.5 图标
 
 | 命令 | 参数 | 返回 | 说明 |
 | --- | --- | --- | --- |
 | `get_app_icon` | `appId: string` | `string \| null` | PNG 的 **data URL**；`null` 表示「没有图标」（不是错误，前端用默认图） |
 | `default_icon` | — | `string` | 内置默认图的 data URL（编译进二进制，永远可用） |
 
-**为什么返回 data URL 而不是路径**：图标只有几十 KB，base64 之后仍远小于一次 IPC 的合理开销；
-而走 Tauri 的 `asset:` 协议需要在 `tauri.conf.json` 配 `assetProtocol.scope`、
-在 `capabilities/default.json` 加 `core:asset:default`，任一处漏配都只在运行时暴露成「图裂」。
-因此 **M3 没有改动 capabilities**，仍是 `core:default`。选择理由与前端三层缓存见 [docs/ICONS.md](ICONS.md)。
+图标以 data URL 返回，避免引入 `asset:` 协议所需的 scope 与 capabilities 配置（漏配只在运行时暴露成「图裂」）；本项目的 capabilities 保持只有 `core:default`。选择理由与前端三层缓存见 [ICONS.md](ICONS.md)。
 
 ### 2.6 启动时发生什么
 
@@ -281,17 +274,7 @@ setInterval 会堆积请求；递归调度保证「上一轮结束才开始下�
 | 活跃片 | 缓存「上次读到 EOF 的字节偏移 + 对应行号」，下一轮直接 seek 过去，不重扫全文件 |
 | 缓存失效 | 活跃片缓存带**文件创建时间**校验：轮转后同名新文件创建时间不同，不会命中旧偏移 |
 
-两级缓存都只是优化：`shard_cache_does_not_change_results` 与 `rotation_resets_active_cursor`
-两条测试专门钉住「缓存不改变返回内容」。
-
-### 4.5 测试覆盖
-
-- 单元（`src-tauri/src/events_reader.rs`）：数字序分片、跨片翻页、半行不消费、
-  活跃片偏移缓存、轮转重置、坏行计数、空行占号、CRLF、越界游标、缺失目录。
-- 集成（`src-tauri/tests/session_events.rs`）：**真实进程** 跑出真实分片
-  （把 `max_file_bytes` 压到 200 字节触发多次轮转），用 3 条/页的游标读完全量，
-  再与「按文件顺序直读」的第二套独立实现逐条比对，并断言 output 序号严格递增、
-  首尾事件是 `start` / `exit`。
+两级缓存只是优化，测试钉住「缓存不改变返回内容」。
 
 ## 5. 前端组件结构
 
@@ -303,10 +286,10 @@ src/
     types.ts                   DTO 类型镜像（与 src-tauri/src/dto.rs 对应）
     api.ts                     invoke 唯一出口：错误归一 + 非宿主降级
     logModel.ts                纯逻辑：事件->日志行、游标推进、自动滚底、格式化
-    logModel.test.ts           45 条单测
+    logModel.test.ts           纯逻辑单测
     iconModel.ts               图标会话内缓存 + 并发合并 + 失败静默降级
-    iconModel.test.ts          11 条单测
-    styleContract.test.ts      19 条「样式契约」测试（token / 交互态 / a11y 约束）
+    iconModel.test.ts          缓存单测
+    styleContract.test.ts      「样式契约」测试（token / 交互态 / a11y 约束）
   hooks/
     useSessionLog.ts           轮询 hook：增量游标 + 状态刷新 + 隐藏暂停
   components/
@@ -314,7 +297,7 @@ src/
     AppList.tsx                左侧列表（状态聚合、hover 启动；选择按钮与启动按钮同级）
     AppDetail.tsx              应用详情 + 活跃会话表
     AppForm.tsx                新建/编辑表单 + 纯函数导出（parseArgs/parseEnv/validateAppId）
-    AppForm.test.ts            15 条单测
+    AppForm.test.ts            表单解析与校验单测
     SessionDetail.tsx          状态条 + 日志流 + 事件列表
     Toast.tsx                  顶部提示（去重 / 语义角色 / 悬停暂停）
     ui/
@@ -330,17 +313,10 @@ src/
     apps.css                   列表 / 图标 / 详情 / 会话 / 日志
 ```
 
-设计 token 分层、token 命名与「组件只允许引用语义层」的约定见 [UI-AUDIT.md](UI-AUDIT.md)。
+设计 token 分层与「组件只允许引用语义层」的约定由 `src/lib/styleContract.test.ts` 守护。
 
-**不引入 UI 库的理由**：界面只有列表、表单、表格、日志流四种结构，分层 CSS 约 33KB（gzip 6.5KB）就能覆盖；
-引入组件库（如 MUI/AntD）会带来数百 KB 与一套需要长期跟随的样式覆盖，对「信息密度高的开发者工具」不划算。
-
-**样式约束由测试守护**：`src/lib/styleContract.test.ts` 会检查「除 tokens.css 外不得出现裸色值」「字号/圆角必须走 token」
-「所有 `var(--x)` 必须有定义」「`!important` 只能出现在 reduced-motion 块」以及若干 a11y 结构约束，
-避免后续迭代把这些约定改回去。
-
-**新增前端依赖**：仅 `vitest`（devDependency，150 包中实际新增 16 个包），用于纯逻辑单测；
-没有引入 jsdom / @testing-library（那会再加约 4MB），因此当前不测组件渲染。
+**不引入 UI 库**：界面只有列表、表单、表格、日志流四种结构，分层 CSS 即可覆盖；组件库会带来数百 KB 体积与长期维护的样式覆盖成本。
+前端依赖仅 `vitest` 用于纯逻辑单测，未引入渲染测试环境。
 
 ## 6. 已知限制
 
@@ -358,9 +334,4 @@ src/
 5. **无虚拟滚动**：日志最多保留 4000 行（`MAX_LOG_ROWS`），超出丢弃最旧的。
    更长的历史请用「最近事件」或直接读 JSONL 文件。
 6. **图标可能抓不到**：Python 服务类应用没有窗口，exe 又是解释器，因此会显示内置默认图——
-   这是**产品决策**而不是缺陷（详见 [docs/ICONS.md](ICONS.md)）。运行时图标要在会话启动后 1.5 秒才重抓一次。
-7. **组件渲染级测试暂缺**：当前 vitest 只跑纯逻辑（node 环境），渲染正确性靠手动验收清单覆盖。
-
-## 7. 手动验收步骤
-
-见 [README「如何运行 GUI」](../README.md#如何运行-gui) 与本文 §1 的界面结构。
+   这是**产品决策**而不是缺陷（详见 [ICONS.md](ICONS.md)）。运行时图标要在会话启动后 1.5 秒才重抓一次。
