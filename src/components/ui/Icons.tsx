@@ -152,6 +152,24 @@ export function IconSearch({ size = 16, className }: IconProps) {
   );
 }
 
+/** 上一个（日志搜索）。 */
+export function IconChevronUp({ size = 16, className }: IconProps) {
+  return (
+    <svg {...svgProps(size, className)}>
+      <path d="m4.5 10 3.5-3.5 3.5 3.5" />
+    </svg>
+  );
+}
+
+/** 下一个（日志搜索）。 */
+export function IconChevronDown({ size = 16, className }: IconProps) {
+  return (
+    <svg {...svgProps(size, className)}>
+      <path d="m4.5 6 3.5 3.5 3.5-3.5" />
+    </svg>
+  );
+}
+
 /** 浅色（太阳）。 */
 export function IconSun({ size = 16, className }: IconProps) {
   return (

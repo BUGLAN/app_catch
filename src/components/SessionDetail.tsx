@@ -12,22 +12,27 @@
  *   - 徽标不再被 flex 拉伸成整格宽度；
  *   - 视图切换用共享 Segmented（tablist/tab 语义，方向键可用）；
  *   - 日志/事件两个视图共用 .scroll-surface（原来是两份一模一样的六行声明）；
- *   - 日志行按 level 分色：原来的 .log-error 类名从没被渲染过（只按 stream 上色），
- *     所以真实错误和普通 stderr 长得一样。现在用 logModel 已经算好的 level。
+ *   - 输出行不做严重程度着色：stderr 不等于出错，按内容猜又必然误判（见 logModel 的 LogRow.level）。
+ *     来源流只用中性的 stdout / stderr 小标签标注，找错误交给日志搜索（⌘F / Ctrl+F）。
  */
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useSessionLog } from "../hooks/useSessionLog";
 import {
   describeExit,
   exitReasonLabel,
   formatClock,
+  findMatches,
   formatDateTime,
   runStateLabel,
   shouldAutoScroll,
+  splitMatches,
+  stepMatch,
+  type LogRow,
 } from "../lib/logModel";
+import { detectPlatform } from "../lib/platform";
 import type { SessionEvent, SessionSnapshot } from "../lib/types";
-import { IconTerminal } from "./ui/Icons";
+import { IconChevronDown, IconChevronUp, IconClose, IconSearch, IconTerminal } from "./ui/Icons";
 import { Banner, EmptyNotice, Segmented, TabPanel } from "./ui/Primitives";
 
 interface Props {
@@ -38,13 +43,27 @@ interface Props {
 /** 视图切换：日志流 / 结构化事件列表。 */
 type ViewMode = "log" | "events";
 
+/** 聚焦日志搜索的快捷键文案（与标题栏 ⌘N 同一套平台判定）。 */
+const FIND_SHORTCUT = detectPlatform() === "macos" ? "⌘F" : "Ctrl+F";
+
 export function SessionDetail({ session, allSessions }: Props) {
   const { rows, recentEvents, skippedLines, truncated, gone, error, snapshot, clear } =
     useSessionLog(session);
   const [mode, setMode] = useState<ViewMode>("log");
   const [autoScroll, setAutoScroll] = useState(true);
 
+  const [query, setQuery] = useState("");
+  const [onlyMatches, setOnlyMatches] = useState(false);
+  /** 当前命中在 matches 里的位置；-1 表示还没定位到任何一个。 */
+  const [current, setCurrent] = useState(-1);
+  /** 每次「定位到某个命中」自增一次，驱动滚动（current 不变时也要能重新滚过去）。 */
+  const [jump, setJump] = useState(0);
+
   const logRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const matches = useMemo(() => findMatches(rows, query), [rows, query]);
+  const searching = query.length > 0;
+  const currentRow = current >= 0 && current < matches.length ? matches[current]! : -1;
   const headingId = "session-heading";
   const panelPrefix = "session-view";
 
@@ -56,6 +75,72 @@ export function SessionDetail({ session, allSessions }: Props) {
     }
     element.scrollTop = element.scrollHeight;
   }, [rows, autoScroll, mode]);
+
+  // 切换会话时搜索状态归零：上一个会话的查询对新会话没有意义
+  useEffect(() => {
+    setQuery("");
+    setOnlyMatches(false);
+    setCurrent(-1);
+  }, [session.session_id]);
+
+  // 定位到命中：滚到视口中间，并暂停自动滚底，否则下一批输出会把视图拽走
+  useEffect(() => {
+    if (jump === 0) {
+      return;
+    }
+    const target = logRef.current?.querySelector<HTMLElement>('[data-current-match="true"]');
+    if (target) {
+      setAutoScroll(false);
+      target.scrollIntoView({ block: "center" });
+    }
+  }, [jump]);
+
+  const goTo = (index: number) => {
+    setCurrent(index);
+    if (index >= 0) {
+      setJump((value) => value + 1);
+    }
+  };
+
+  const changeQuery = (next: string) => {
+    setQuery(next);
+    // 输入时定位到最新的命中：日志贴底阅读，最近的那条最可能是要找的
+    const count = findMatches(rows, next).length;
+    goTo(count > 0 ? count - 1 : -1);
+  };
+
+  const step = (direction: 1 | -1) => goTo(stepMatch(current, matches.length, direction));
+
+  /*
+   * ⌘F / Ctrl+F 聚焦日志搜索（WebView 没有可依赖的原生页内查找，且日志只保留最近 MAX_LOG_ROWS 行）。
+   * 弹窗打开时不响应：焦点被困在弹窗里，抢走焦点会破坏它的键盘约定。
+   */
+  useEffect(() => {
+    const isMac = document.documentElement.dataset.platform === "macos";
+    const onKeyDown = (event: KeyboardEvent) => {
+      const primary = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+      if (!primary || event.shiftKey || event.altKey || event.key.toLowerCase() !== "f") {
+        return;
+      }
+      if (document.querySelector('[aria-modal="true"]')) {
+        return;
+      }
+      event.preventDefault();
+      setMode("log");
+      // 切到日志视图后输入框才渲染，等一帧再聚焦
+      window.requestAnimationFrame(() => {
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const visibleRows: { row: LogRow; index: number }[] =
+    searching && onlyMatches
+      ? matches.map((index) => ({ row: rows[index]!, index }))
+      : rows.map((row, index) => ({ row, index }));
 
   const handleScroll = () => {
     const element = logRef.current;
@@ -178,6 +263,86 @@ export function SessionDetail({ session, allSessions }: Props) {
         />
         <div className="toolbar-right">
           {mode === "log" ? (
+            <div className="log-search" role="search">
+              <span className="log-search-icon" aria-hidden="true">
+                <IconSearch size={13} />
+              </span>
+              <input
+                ref={searchRef}
+                type="search"
+                className="log-search-input"
+                value={query}
+                onChange={(event) => changeQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    step(event.shiftKey ? -1 : 1);
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    if (searching) {
+                      changeQuery("");
+                    } else {
+                      event.currentTarget.blur();
+                    }
+                  }
+                }}
+                placeholder={`搜索日志（${FIND_SHORTCUT}）`}
+                aria-label="搜索日志"
+                aria-keyshortcuts={FIND_SHORTCUT === "⌘F" ? "Meta+F" : "Control+F"}
+                spellCheck={false}
+                autoComplete="off"
+              />
+              {searching ? (
+                <>
+                  <span className="log-search-count" aria-live="polite">
+                    {matches.length === 0
+                      ? "无结果"
+                      : `${currentRow >= 0 ? current + 1 : "–"} / ${matches.length}`}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-icon"
+                    onClick={() => step(-1)}
+                    disabled={matches.length === 0}
+                    aria-label="上一个匹配"
+                    title="上一个（Shift+Enter）"
+                  >
+                    <IconChevronUp size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-icon"
+                    onClick={() => step(1)}
+                    disabled={matches.length === 0}
+                    aria-label="下一个匹配"
+                    title="下一个（Enter）"
+                  >
+                    <IconChevronDown size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-icon"
+                    onClick={() => changeQuery("")}
+                    aria-label="清空搜索"
+                    title="清空搜索（Esc）"
+                  >
+                    <IconClose size={11} />
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+          {mode === "log" && searching ? (
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={onlyMatches}
+                onChange={(event) => setOnlyMatches(event.target.checked)}
+              />
+              只看匹配行
+            </label>
+          ) : null}
+          {mode === "log" ? (
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -213,8 +378,17 @@ export function SessionDetail({ session, allSessions }: Props) {
           <EmptyNotice icon={<IconTerminal size={14} />}>
             暂无输出。进程一旦写 stdout/stderr，这里会自动追加。
           </EmptyNotice>
+        ) : searching && onlyMatches && visibleRows.length === 0 ? (
+          <EmptyNotice icon={<IconSearch size={14} />}>没有包含「{query}」的行。</EmptyNotice>
         ) : (
-          rows.map((row) => <LogLine key={row.key} row={row} />)
+          visibleRows.map(({ row, index }) => (
+            <LogLine
+              key={row.key}
+              row={row}
+              query={query}
+              isCurrent={index === currentRow}
+            />
+          ))
         )}
       </TabPanel>
 
@@ -256,33 +430,44 @@ export function SessionDetail({ session, allSessions }: Props) {
 }
 
 /** 单条日志行：分隔行 / 提示行 / 普通输出行三种形态。 */
-function LogLine({ row }: { row: ReturnType<typeof useSessionLog>["rows"][number] }) {
+function LogLine({ row, query, isCurrent }: { row: LogRow; query: string; isCurrent: boolean }) {
+  const matchAttr = isCurrent ? { "data-current-match": "true" } : {};
+  const currentClass = isCurrent ? " is-current-match" : "";
+
   if (row.kind === "divider") {
     return (
-      <div className={`log-divider log-divider-${row.level}`}>
+      <div className={`log-divider log-divider-${row.level}${currentClass}`} {...matchAttr}>
         <span className="log-divider-time">{formatClock(row.ts)}</span>
-        <span className="log-divider-text">{row.text}</span>
+        <span className="log-divider-text">
+          <Highlighted text={row.text} query={query} />
+        </span>
       </div>
     );
   }
 
   if (row.kind === "notice") {
     return (
-      <div className="log-notice">
+      <div className={`log-notice${currentClass}`} {...matchAttr}>
         <span className="log-notice-time">{formatClock(row.ts)}</span>
-        <span className="log-notice-text">{row.text}</span>
+        <span className="log-notice-text">
+          <Highlighted text={row.text} query={query} />
+        </span>
       </div>
     );
   }
 
   const stream = row.stream ?? "stdout";
-  // level 由 logModel 按内容判定：error 才是真错误，普通 stderr 只是措辞提醒
-  const levelClass = row.level === "error" ? " log-error" : "";
 
   return (
-    <div className={`log-line log-${stream}${levelClass}${row.lossy ? " is-lossy" : ""}`}>
+    <div
+      className={`log-line${row.lossy ? " is-lossy" : ""}${currentClass}`}
+      {...matchAttr}
+    >
       <span className="log-time">{formatClock(row.ts)}</span>
-      <span className={`log-stream log-stream-${stream}`}>{stream === "stderr" ? "ERR" : "OUT"}</span>
+      {/* 来源流只是事实标注，不带颜色语义：stderr 不等于出错 */}
+      <span className="log-stream" title={stream === "stderr" ? "来自标准错误流" : "来自标准输出流"}>
+        {stream}
+      </span>
       {row.lossy ? (
         <span
           className="log-lossy"
@@ -291,8 +476,30 @@ function LogLine({ row }: { row: ReturnType<typeof useSessionLog>["rows"][number
           编码损坏
         </span>
       ) : null}
-      <span className="log-text">{row.text}</span>
+      <span className="log-text">
+        <Highlighted text={row.text} query={query} />
+      </span>
     </div>
+  );
+}
+
+/** 把搜索命中渲染成 <mark>；没有查询时直接输出原文。 */
+function Highlighted({ text, query }: { text: string; query: string }) {
+  if (query.length === 0) {
+    return <>{text}</>;
+  }
+  return (
+    <>
+      {splitMatches(text, query).map((segment, index) =>
+        segment.match ? (
+          <mark className="log-match" key={index}>
+            {segment.text}
+          </mark>
+        ) : (
+          segment.text
+        )
+      )}
+    </>
   );
 }
 

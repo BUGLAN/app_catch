@@ -9,17 +9,16 @@ import { describe, expect, it } from "vitest";
 import {
   advanceCursor,
   appendRows,
-  classifyOutputLevel,
   describeExit,
   describeStatus,
   eventToRows,
   exitReasonLabel,
+  findMatches,
   formatClock,
   formatDateTime,
   initialOf,
   INITIAL_CURSOR,
   isSessionGone,
-  looksLikeError,
   MAX_LOG_ROWS,
   pollInterval,
   POLL_FAST_MS,
@@ -27,6 +26,8 @@ import {
   renderCommand,
   runStateLabel,
   shouldAutoScroll,
+  splitMatches,
+  stepMatch,
 } from "./logModel";
 import type { LogCursor } from "./logModel";
 import type { SessionEvent, SessionEventsPage } from "./types";
@@ -126,7 +127,7 @@ describe("分片顺序合并", () => {
 });
 
 describe("lossy 编码标记", () => {
-  it("encoding=lossy 的行被标记为 warn 且 lossy=true", () => {
+  it("encoding=lossy 的行标记 lossy=true（损坏单独表达，不改配色级别）", () => {
     const event: SessionEvent = {
       event: "output",
       v: 1,
@@ -138,7 +139,7 @@ describe("lossy 编码标记", () => {
     const rows = eventToRows(event, 0);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.lossy).toBe(true);
-    expect(rows[0]!.level).toBe("warn");
+    expect(rows[0]!.level).toBe("normal");
   });
 
   it("gbk 与 utf-8 都不算损坏", () => {
@@ -166,84 +167,21 @@ describe("lossy 编码标记", () => {
     expect(eventToRows(legacy, 0)[0]!.lossy).toBe(false);
   });
 
-  it("普通 stderr 标为 warn（不再一律吃红色），但不算编码损坏", () => {
-    const event: SessionEvent = {
-      event: "output",
-      v: 1,
-      ts: "t",
-      stream: "stderr",
-      line: '$ concurrently -k "vite --strictPort" "wait-on http://127.0.0.1:8090"',
-    };
-    const row = eventToRows(event, 0)[0]!;
-    expect(row.level).toBe("warn");
-    expect(row.lossy).toBe(false);
-  });
-
-  it("stderr 里的真实错误标为 error", () => {
-    const event: SessionEvent = {
-      event: "output",
-      v: 1,
-      ts: "t",
-      stream: "stderr",
-      line: "Error: Cannot find module 'vite'",
-    };
-    expect(eventToRows(event, 0)[0]!.level).toBe("error");
-  });
-
-  it("stdout 里的错误也标为 error（不只看流）", () => {
-    const event: SessionEvent = {
-      event: "output",
-      v: 1,
-      ts: "t",
-      stream: "stdout",
-      line: "thread 'main' panicked at src/main.rs:12",
-    };
-    expect(eventToRows(event, 0)[0]!.level).toBe("error");
-  });
-
-  it("常规 stdout 保持 normal", () => {
-    const event: SessionEvent = {
-      event: "output",
-      v: 1,
-      ts: "t",
-      stream: "stdout",
-      line: "Already up to date",
-    };
-    expect(eventToRows(event, 0)[0]!.level).toBe("normal");
-  });
 });
 
-describe("classifyOutputLevel 的边界", () => {
-  it("lossy 优先于一切：即使命中错误特征也标 warn（编码损坏单独表达）", () => {
-    expect(classifyOutputLevel("Error: 乱码", "stderr", true)).toBe("warn");
-  });
-
-  it("未定义 stream 时按 stdout 处理", () => {
-    expect(classifyOutputLevel("hello", undefined, false)).toBe("normal");
-  });
-
+describe("输出行不推断严重程度", () => {
   it.each([
-    ["panic", "thread panicked at ..."],
-    ["uncaught", "Uncaught TypeError: x is not a function"],
-    ["EADDRINUSE", "listen EADDRINUSE: address already in use :::15173"],
-    ["ERR!", "ERR! code ELIFECYCLE"],
-    ["cannot find", "Cannot find module 'electron'"],
-    ["fatal", "fatal: not a git repository"],
-  ])("命中错误特征 %s", (_label, line) => {
-    expect(looksLikeError(line)).toBe(true);
-  });
-
-  it.each([
-    ["脚本回显", '$ concurrently -k "vite"'],
-    ["升级提示", "Already up to date"],
-    ["完成提示", "Done in 443ms using pnpm v11.21.0"],
-    ["弃用警告", "(node:1) [DEP0060] DeprecationWarning: The `util._extend` API is deprecated."],
-    ["中文常规输出", "同步忽略规则已生成：electron/ignore-rules.cjs"],
-  ])("不把常规输出 %s 误判为错误", (_label, line) => {
-    expect(looksLikeError(line)).toBe(false);
+    ["stderr 上的脚本回显", "stderr", "$ node scripts/build-ignore-rules.mjs && node scripts/dev-electron.mjs"],
+    ["stderr 上的真实错误", "stderr", "Error: Cannot find module 'vite'"],
+    ["stdout 上的 panic", "stdout", "thread 'main' panicked at src/main.rs:12"],
+    ["常规 stdout", "stdout", "Already up to date"],
+  ] as const)("%s 一律 normal，只如实保留来源流", (_label, stream, line) => {
+    const row = eventToRows({ event: "output", v: 1, ts: "t", stream, line }, 0)[0]!;
+    expect(row.level).toBe("normal");
+    expect(row.stream).toBe(stream);
+    expect(row.text).toBe(line);
   });
 });
-
 
 describe("overflow 与状态/退出事件的渲染形态", () => {
   it("overflow 渲染成 notice，文案带丢弃行数", () => {
@@ -384,5 +322,59 @@ describe("格式化与文案", () => {
   it("not_found 判定为「会话已不在管理器」", () => {
     expect(isSessionGone({ kind: "not_found", message: "未找到会话" })).toBe(true);
     expect(isSessionGone({ kind: "io", message: "磁盘错误" })).toBe(false);
+  });
+});
+
+describe("日志搜索", () => {
+  const rows = ["Vite ready", "Error: boom", "plain", "another ERROR here"].flatMap((line, index) =>
+    eventToRows({ event: "output", v: 1, ts: "t", stream: "stdout", line }, index)
+  );
+
+  it("不区分大小写地找出命中行", () => {
+    expect(findMatches(rows, "error")).toEqual([1, 3]);
+  });
+
+  it("空查询不命中任何行", () => {
+    expect(findMatches(rows, "")).toEqual([]);
+  });
+
+  it("按纯子串匹配，正则元字符没有特殊含义", () => {
+    const special = eventToRows(
+      { event: "output", v: 1, ts: "t", stream: "stdout", line: "listen (port 5173)" },
+      0
+    );
+    expect(findMatches(special, "(port")).toEqual([0]);
+    expect(findMatches(rows, ".")).toEqual([]);
+  });
+
+  it("分隔行与提示行也能被搜到", () => {
+    const [exit] = eventToRows({ event: "exit", v: 1, ts: "t", code: 1, reason: "crashed" }, 0);
+    expect(findMatches([exit!], "退出码 1")).toEqual([0]);
+  });
+
+  it("切段保留原文大小写并标出每个命中", () => {
+    expect(splitMatches("Err and err", "ERR")).toEqual([
+      { text: "Err", match: true },
+      { text: " and ", match: false },
+      { text: "err", match: true },
+    ]);
+  });
+
+  it("空查询或未命中时返回整段", () => {
+    expect(splitMatches("abc", "")).toEqual([{ text: "abc", match: false }]);
+    expect(splitMatches("abc", "z")).toEqual([{ text: "abc", match: false }]);
+    expect(splitMatches("", "a")).toEqual([{ text: "", match: false }]);
+  });
+
+  it("上一个 / 下一个在命中之间循环", () => {
+    expect(stepMatch(0, 3, 1)).toBe(1);
+    expect(stepMatch(2, 3, 1)).toBe(0);
+    expect(stepMatch(0, 3, -1)).toBe(2);
+  });
+
+  it("无命中返回 -1，失效位置从头或尾重新开始", () => {
+    expect(stepMatch(0, 0, 1)).toBe(-1);
+    expect(stepMatch(-1, 3, 1)).toBe(0);
+    expect(stepMatch(5, 3, -1)).toBe(2);
   });
 });

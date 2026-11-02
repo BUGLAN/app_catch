@@ -36,8 +36,15 @@ export interface LogRow {
   text: string;
   /** 是否是有损解码（原始字节不可还原），需要醒目标记。 */
   lossy: boolean;
-  /** 严重程度，决定配色。 */
-  level: "normal" | "warn" | "error" | "info";
+  /**
+   * 分隔行 / 提示行的配色。
+   *
+   * 进程输出行恒为 `normal`：这里刻意**不推断严重程度**。stderr 不等于出错
+   * （pnpm 回显、Node 弃用提示都走 stderr），按内容猜又必然误报漏报；猜错的红色
+   * 比没有颜色更糟。界面只呈现可确定的事实（流、编码损坏、丢行、退出码），
+   * 要找错误由用户在日志搜索里自己搜。
+   */
+  level: "normal" | "warn" | "info";
 }
 
 /** 增量读取的状态机快照。 */
@@ -108,65 +115,6 @@ export function advanceCursor(
 }
 
 /** 把一条原始事件转换成若干日志行。 */
-/**
- * 判断一条输出行的严重程度。
- *
- * 为什么不能「stderr 就是 error」：这是 M5 验收时暴露的真实问题。
- * pnpm 回显待执行脚本、concurrently 打印 `$ ...` 命令行、vite 打提示、
- * Node 打 DeprecationWarning——**全都走 stderr**。一刀切成红色会让
- * 满屏假警报，用户很快学会无视红色，真正的问题反而被淹没。
- *
- * 规则改成「看内容」：
- * - 有损解码（lossy）→ warn（编码损坏必须可见，但不是程序报错）
- * - 行内命中真实错误特征 → error
- * - 其余 stderr → warn（保持提示性，但不再吃刺眼的红）
- * - stdout → normal
- *
- * 措辞刻意保守：只匹配明确的失败信号，不做词干模糊匹配。
- * 宁可漏标一行，也不能把常规输出染红——前者用户会自己看，后者会毁掉整个颜色语义。
- */
-export function classifyOutputLevel(
-  line: string,
-  stream: StreamKind | undefined,
-  lossy: boolean
-): LogRow["level"] {
-  if (lossy) {
-    return "warn";
-  }
-  // 先看内容再看流：panic 之类也会从 stdout 出来，只看流会漏掉
-  if (looksLikeError(line)) {
-    return "error";
-  }
-  return stream === "stderr" ? "warn" : "normal";
-}
-
-/**
- * 这行文本是否像一条真正的错误。
- *
- * 覆盖各生态最常见的失败措辞：Node/Rust/Python 的 panic 与 Error，
- * pnpm/npm 的 ERR! 前缀，构建工具的 "failed to"，以及带错误码的行。
- * 注意区分：`0 errors` / `error-free` 这类「否定式」不算错误，
- * 但为避免正则过度复杂，这里只做正向匹配——
- * 误判成 warn 的代价远小于把正常输出标红。
- */
-export function looksLikeError(line: string): boolean {
-  return ERROR_PATTERNS.some((pattern) => pattern.test(line));
-}
-
-/** 真实错误的特征串。顺序无关，任一命中即为错误。 */
-const ERROR_PATTERNS: readonly RegExp[] = [
-  /\bpanic(?:ked|s|king)?\b/i,
-  /\b(?:uncaught|unhandled)\b/i,
-  /\bexception\b/i,
-  /\berror\b/i,
-  /\bfailed\b/i,
-  /\bfatal\b/i,
-  /\bcannot\s+(?:find|resolve|open|read|write|load)\b/i,
-  /\bE(?:NOENT|ACCES|PERM|CONNREFUSED|ADDRINUSE)\b/,
-  /\bERR!/,
-  /^\s*error:/i,
-];
-
 export function eventToRows(event: SessionEvent, lineNo: number): LogRow[] {
   switch (event.event) {
     case "output": {
@@ -179,7 +127,7 @@ export function eventToRows(event: SessionEvent, lineNo: number): LogRow[] {
           stream: event.stream,
           text: event.line,
           lossy,
-          level: classifyOutputLevel(event.line, event.stream, lossy),
+          level: "normal",
         },
       ];
     }
@@ -365,6 +313,71 @@ export function renderCommand(command: string, args: string[] | undefined): stri
   return parts
     .map((part) => (part.includes(" ") || part.includes('"') ? `"${part.replace(/"/g, '\\"')}"` : part))
     .join(" ");
+}
+
+/** 日志搜索的一段：命中部分单独渲染成高亮。 */
+export interface MatchSegment {
+  text: string;
+  match: boolean;
+}
+
+/**
+ * 找出文本包含 `query` 的行下标（不区分大小写的纯子串匹配）。
+ *
+ * 刻意不支持正则：搜索框面向「我想找 error / 某个端口号」这类直觉输入，
+ * 用户敲进 `(` `.` 不该得到语法错误或意外的通配。空查询不命中任何行。
+ */
+export function findMatches(rows: readonly LogRow[], query: string): number[] {
+  const needle = query.toLowerCase();
+  if (needle.length === 0) {
+    return [];
+  }
+  const indices: number[] = [];
+  rows.forEach((row, index) => {
+    if (row.text.toLowerCase().includes(needle)) {
+      indices.push(index);
+    }
+  });
+  return indices;
+}
+
+/** 把一行文本按命中位置切段，供渲染高亮；空查询或未命中时返回整段。 */
+export function splitMatches(text: string, query: string): MatchSegment[] {
+  const needle = query.toLowerCase();
+  if (needle.length === 0) {
+    return [{ text, match: false }];
+  }
+  const haystack = text.toLowerCase();
+  const segments: MatchSegment[] = [];
+  let cursor = 0;
+  let hit = haystack.indexOf(needle, cursor);
+  while (hit !== -1) {
+    if (hit > cursor) {
+      segments.push({ text: text.slice(cursor, hit), match: false });
+    }
+    segments.push({ text: text.slice(hit, hit + needle.length), match: true });
+    cursor = hit + needle.length;
+    hit = haystack.indexOf(needle, cursor);
+  }
+  if (cursor < text.length || segments.length === 0) {
+    segments.push({ text: text.slice(cursor), match: false });
+  }
+  return segments;
+}
+
+/**
+ * 在命中列表里循环移动当前位置：`step` 为 +1 / -1。
+ *
+ * 没有命中时返回 -1；当前位置无效（例如命中列表刚缩短）时从头或尾重新开始。
+ */
+export function stepMatch(current: number, total: number, step: 1 | -1): number {
+  if (total === 0) {
+    return -1;
+  }
+  if (current < 0 || current >= total) {
+    return step === 1 ? 0 : total - 1;
+  }
+  return (current + step + total) % total;
 }
 
 /** 应用名首字（用于占位头像块）：取第一个非空白字符。 */
