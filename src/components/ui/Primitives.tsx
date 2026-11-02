@@ -91,7 +91,6 @@ export function ListSkeleton({ rows = 6, collapsed = false }: { rows?: number; c
           <span className="skeleton skeleton-app-icon" />
           <span className="skeleton-lines">
             <span className="skeleton skeleton-line-name" />
-            <span className="skeleton skeleton-line-meta" />
           </span>
         </div>
       ))}

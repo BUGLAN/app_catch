@@ -493,8 +493,6 @@ export default function App() {
         sessions={[]}
         selectedId={null}
         onSelect={() => {}}
-        onStart={() => {}}
-        busy
         loading
         collapsed={compactRail}
       />
@@ -517,8 +515,6 @@ export default function App() {
           setFormTarget(undefined);
           setSettingsOpen(false);
         }}
-        onStart={handleStart}
-        busy={busy}
         iconRefresh={iconRefresh}
         iconForceRefresh={iconForceRefresh}
         collapsed={compactRail}

@@ -39,8 +39,9 @@
 /* ---------- 应用列表项 ----------
  * 结构：li > div.app-item
  *        ├ button.app-item-select（覆盖整行的可点区域，真按钮，键盘可达）
- *        ├ 图标 / 名称 / 标签（视觉层，pointer-events 交给上面的按钮）
- *        └ 徽标 + 启动按钮（独立于选择按钮的同级元素，避免嵌套交互元素）
+ *        └ 图标 / 名称（视觉层，pointer-events 交给上面的按钮）
+ *
+ * 一行固定 rail-item-size 高，与底部主题 / 设置行同一节奏。
  */
 
 .app-list {
@@ -54,7 +55,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1-5) var(--space-2);
+  min-height: var(--rail-item-size);
+  padding: 0 var(--space-2);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   transition: background-color var(--duration-fast) var(--ease-standard),
@@ -100,7 +102,7 @@
   outline-offset: -2px;
 }
 
-/* 图标位：图标 + 运行状态小圆点（折叠态下这是唯一的状态信号） */
+/* 图标位：图标 + 状态小圆点（侧栏唯一的状态信号） */
 .app-item-icon {
   position: relative;
   display: grid;
@@ -146,34 +148,14 @@
   background: var(--danger);
 }
 
-.app-item-dot-exited {
-  background: var(--warning);
-}
-
 /* 选中项的背景不是 surface-raised，圆点描边要跟着换 */
 .app-item.is-selected .app-item-dot {
   box-shadow: 0 0 0 2px var(--surface-selected);
 }
 
-.app-item-main {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-0-5);
+.app-item-name {
   flex: 1;
   min-width: 0;
-  pointer-events: none;
-}
-
-/* 第二行：标签（可裁剪）+ 状态槽位（固定宽度） */
-.app-item-line {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-  height: 18px;
-}
-
-.app-item-name {
   color: var(--text-primary);
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
@@ -181,108 +163,14 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.app-item-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
   pointer-events: none;
 }
 
-/*
- * 标签整体作为一个裁剪容器：放不下时裁掉末尾，而不是把每个标签都压成 "py…"。
- * 单个标签最多 92px，超出自身省略。
- */
-/*
- * 侧栏里的标签是"次要说明"而不是可操作的筹码：去掉底色，用 · 串成一行灰字，
- * 像 Finder / 邮件侧栏的副标题。原来的胶囊在 184–220px 宽度下会被状态徽标切成 "electror"。
- */
-.app-item-meta .tag {
-  flex: none;
-  padding: 0;
-  background: none;
-  border: 0;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 放不下时整行在右端淡出，而不是把每个标签各自截成 "electror · nod…" */
-.app-item-meta {
-  mask-image: linear-gradient(to right, black calc(100% - var(--space-4)), transparent);
-}
-
-.app-item-meta .tag + .tag::before {
-  content: "·";
-  margin-right: var(--space-1);
-  color: var(--text-disabled);
-}
-
-/* 「未运行」是默认状态：不占位，只有运行 / 退出 / 崩溃这些"值得看一眼"的状态才出徽标 */
-.app-item[data-state="idle"] .app-item-status .badge {
-  display: none;
-}
-
-/*
- * 状态槽位：徽标与「启动」按钮共用同一格。
- * 按钮绝对定位覆盖在徽标上，切换时不改变行宽，也不会推动名称/标签。
- */
-.app-item-status {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex: none;
-  min-height: 18px;
-  margin-left: auto;
-  /* 层叠在选择按钮之上，按钮才点得到 */
-  z-index: 1;
-}
-
-.app-item-status .badge {
-  transition: opacity var(--duration-fast) var(--ease-standard);
-}
-
-.app-item:hover .app-item-status .badge,
-.app-item:focus-within .app-item-status .badge {
-  opacity: 0;
-}
-
-/* 启动按钮：默认淡出且不吃点击（避免误触状态徽标的位置） */
-.app-start {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  height: var(--control-height-sm);
-  margin-top: calc(var(--control-height-sm) / -2);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--duration-fast) var(--ease-standard);
-}
-
-.app-item:hover .app-start,
-.app-item:focus-within .app-start {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* 触屏 / 无 hover 设备：始终显示，否则永远点不到 */
-@media (hover: none) {
-  .app-start {
-    opacity: 1;
-    pointer-events: auto;
-  }
-}
-
-/* ---------- 折叠态：行变成方形图标位 ---------- */
+/* ---------- 折叠态：行变成居中的方形图标位 ---------- */
 
 .sidebar[data-collapsed="true"] .app-item {
   justify-content: center;
-  padding: var(--space-1-5) 0;
+  padding: var(--space-1) 0;
   gap: 0;
 }
 

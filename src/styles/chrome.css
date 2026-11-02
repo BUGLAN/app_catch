@@ -320,11 +320,9 @@
   width: var(--rail-collapsed-width);
 }
 
-/* 折叠态：只留图标 —— 文字、标签、徽标一律收起 */
+/* 折叠态：只留图标 —— 文字一律收起 */
 .sidebar[data-collapsed="true"] .rail-action-label,
 .sidebar[data-collapsed="true"] .rail-action-value,
-.sidebar[data-collapsed="true"] .app-start,
-.sidebar[data-collapsed="true"] .app-item-meta,
 .sidebar[data-collapsed="true"] .app-item-name {
   display: none;
 }
@@ -414,6 +412,8 @@
 .sidebar[data-collapsed="true"] .rail-action {
   justify-content: center;
   width: var(--rail-item-size);
+  /* 外层 tooltip-trigger 是满宽块：靠 auto 外边距与列表图标对齐同一中线 */
+  margin-inline: auto;
   padding: 0;
 }
 
@@ -576,8 +576,6 @@
 
   .sidebar .rail-action-label,
   .sidebar .rail-action-value,
-  .sidebar .app-start,
-  .sidebar .app-item-meta,
   .sidebar .app-item-name {
     display: none;
   }
@@ -594,6 +592,7 @@
   .sidebar .rail-action {
     justify-content: center;
     width: var(--rail-item-size);
+    margin-inline: auto;
     padding: 0;
   }
 

@@ -1048,7 +1048,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1-5) var(--space-2);
+  min-height: var(--rail-item-size);
+  padding: 0 var(--space-2);
 }
 
 .skeleton-app-icon {
@@ -1069,11 +1070,6 @@
 .skeleton-line-name {
   width: 62%;
   height: 10px;
-}
-
-.skeleton-line-meta {
-  width: 38%;
-  height: 8px;
 }
 
 .skeleton-panel {

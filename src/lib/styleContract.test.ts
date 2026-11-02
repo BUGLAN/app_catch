@@ -276,11 +276,10 @@ describe("设计 token 契约", () => {
     expect(base).toContain("outline: var(--focus-ring-width) solid var(--focus-ring)");
   });
 
-  it("支持 reduced-motion / forced-colors / 无 hover 设备", () => {
+  it("支持 reduced-motion / forced-colors", () => {
     const all = allStyles.map(([, source]) => source).join("\n");
     expect(all).toContain("prefers-reduced-motion: reduce");
     expect(all).toContain("forced-colors: active");
-    expect(all).toContain("(hover: none)");
   });
 
   it("不写死 min-width 导致横向裁切（原 .shell 的 800px 就是这个问题）", () => {
@@ -322,16 +321,18 @@ describe("组件层的可访问性契约", () => {
     expect(primitives).toContain("aria-controls");
   });
 
-  it("列表项不再嵌套交互元素（选择按钮与启动按钮同级）", () => {
+  it("列表项不嵌套交互元素，侧栏不再提供启动入口", () => {
     const list = appListSource;
     const selectStart = list.indexOf('className="app-item-select"');
-    const mainStart = list.indexOf('<span className="app-item-main"');
+    const mainStart = list.indexOf('<span className="app-item-icon"');
     expect(selectStart).toBeGreaterThan(-1);
     expect(mainStart).toBeGreaterThan(selectStart);
     // 覆盖层的选择按钮里只能有 sr-only 文案，不能再塞按钮
     const selectBlock = list.slice(selectStart, mainStart);
     expect(selectBlock).not.toContain("<button");
     expect(list).toContain('aria-current={selected ? "true" : undefined}');
+    // 启动只在右侧详情：列表里只剩那一个选择按钮
+    expect(list.split("<button").length - 1).toBe(1);
   });
 
   it("toast 区分 role=status 与 role=alert，并在悬停时暂停倒计时", () => {
