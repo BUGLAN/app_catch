@@ -101,6 +101,15 @@ export function parseTags(text: string): string[] {
   return tags;
 }
 
+/** 校验 hook 超时（秒）：留空表示默认值，否则必须是正整数。 */
+export function validateHookTimeout(raw: string): string | null {
+  const value = raw.trim();
+  if (value.length === 0) {
+    return null;
+  }
+  return /^[1-9][0-9]*$/.test(value) ? null : "hook 超时必须是正整数（秒）";
+}
+
 /** 把标签数组还原成逗号分隔文本。 */
 function joinTags(tags: string[] | undefined): string {
   return (tags ?? []).join(", ");
@@ -124,6 +133,11 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
   const [envText, setEnvText] = useState(joinEnv(initial?.env));
   const [tagsText, setTagsText] = useState(joinTags(initial?.tags));
   const [icon, setIcon] = useState(initial?.icon ?? "");
+  const [beforeText, setBeforeText] = useState((initial?.hooks?.before ?? []).join("\n"));
+  const [afterText, setAfterText] = useState((initial?.hooks?.after ?? []).join("\n"));
+  const [hookTimeout, setHookTimeout] = useState(
+    initial?.hooks?.timeout_secs != null ? String(initial.hooks.timeout_secs) : ""
+  );
   const [submitted, setSubmitted] = useState(false);
 
   const idError = useMemo(() => validateAppId(id), [id]);
@@ -132,7 +146,9 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
   const nameError = name.trim().length === 0 ? "名称不能为空" : null;
   const commandError = command.trim().length === 0 ? "启动命令不能为空" : null;
 
-  const errors = [idError, nameError, commandError, ...envParsed.errors].filter(
+  const hookTimeoutError = validateHookTimeout(hookTimeout);
+
+  const errors = [idError, nameError, commandError, hookTimeoutError, ...envParsed.errors].filter(
     (value): value is string => value !== null
   );
   const canSubmit = errors.length === 0 && !busy;
@@ -159,6 +175,11 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
         env: envParsed.env,
         icon: icon.trim().length > 0 ? icon.trim() : null,
         tags: parseTags(tagsText),
+        hooks: {
+          before: parseArgs(beforeText),
+          after: parseArgs(afterText),
+          timeout_secs: hookTimeout.trim().length > 0 ? Number(hookTimeout.trim()) : null,
+        },
       },
       isNew
     );
@@ -283,6 +304,52 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
             placeholder="例如 E:/repo/app/icon.png"
             disabled={busy}
             spellCheck={false}
+            autoComplete="off"
+          />
+        </Field>
+      </div>
+
+      <div className="form-grid">
+        <Field
+          label="启动前 hook（每行一条命令）"
+          wide
+          hint="启动主进程前按顺序在工作目录执行，任一条失败（非 0 退出或超时）即中止启动。"
+        >
+          <textarea
+            className="input mono textarea"
+            value={beforeText}
+            onChange={(event) => setBeforeText(event.target.value)}
+            placeholder={"git pull --ff-only\npnpm install"}
+            rows={3}
+            disabled={busy}
+            spellCheck={false}
+          />
+        </Field>
+
+        <Field
+          label="启动后 hook（每行一条命令）"
+          wide
+          hint="主进程启动成功后在后台按顺序执行；失败只写入日志，不影响主进程。"
+        >
+          <textarea
+            className="input mono textarea"
+            value={afterText}
+            onChange={(event) => setAfterText(event.target.value)}
+            placeholder={"open http://localhost:5173"}
+            rows={3}
+            disabled={busy}
+            spellCheck={false}
+          />
+        </Field>
+
+        <Field label="hook 超时（秒）" error={showError(hookTimeoutError)} hint="单条命令的超时，留空默认 600 秒。">
+          <input
+            className="input mono"
+            value={hookTimeout}
+            onChange={(event) => setHookTimeout(event.target.value)}
+            placeholder="600"
+            inputMode="numeric"
+            disabled={busy}
             autoComplete="off"
           />
         </Field>

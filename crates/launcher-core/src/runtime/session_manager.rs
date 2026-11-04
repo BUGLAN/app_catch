@@ -28,6 +28,7 @@ use crate::error::{AppCatchError, Result};
 use crate::paths;
 use crate::platform::{ProcessBackend, ProcessHandle, ProcessStartTime, SpawnRequest};
 use crate::runtime::capture::{CaptureConfig, CapturePipeline, CaptureSink};
+use crate::runtime::hooks;
 use crate::runtime::log_writer::LogWriter;
 use crate::runtime::status::{default_status_probe, ProbeContext, StatusProbe, StatusSnapshot};
 use crate::session::{now_rfc3339, ExitReason, RunState, SessionEvent, SessionId};
@@ -232,10 +233,18 @@ impl SessionManager {
 
     /// 启动一个应用，返回会话句柄。
     ///
-    /// 步骤：生成 session_id -> 建会话目录 -> 写 start 事件 -> spawn -> 拉起捕获管线。
+    /// 步骤：生成 session_id -> **before hook** -> 建会话目录 -> spawn -> 写 start 事件
+    /// （紧跟 before hook 输出）-> 拉起捕获管线 -> **after hook（后台）**。
     /// 管线与退出收尾在后台任务中完成，调用方无需再管理生命周期。
+    ///
+    /// hook 语义见 [`crate::runtime::hooks`]：before 任一条失败即返回
+    /// [`AppCatchError::HookFailed`]，此时不 spawn 主进程、也不创建会话目录。
     pub async fn start(&self, app: &AppConfig) -> Result<SessionHandle> {
         let session_id = SessionId::new_v4();
+
+        // before hook 在建会话目录之前执行：失败时不留下没有 start 的空会话
+        let before_output = hooks::run_before_hooks(&self.backend, app, session_id).await?;
+
         let dir = self.session_dir(&session_id);
         tokio::fs::create_dir_all(&dir)
             .await
@@ -283,6 +292,10 @@ impl SessionManager {
             spawned.handle.start_time.as_raw(),
         );
         writer.write_event(&start_event).await?;
+        // before hook 的输出紧跟 start 补写（start 必须是首行，见 docs/SESSION_FORMAT.md）
+        for event in &before_output {
+            writer.write_event(event).await?;
+        }
         writer.flush().await?;
 
         let pipeline = CapturePipeline::start(
@@ -294,6 +307,15 @@ impl SessionManager {
 
         // 写盘权柄：状态循环与退出收尾共用它，谁都不再自己开 LogWriter
         let sink = pipeline.sink();
+
+        // after hook：主进程已起、start 已落盘，后台执行，不阻塞 start 返回、不影响主进程
+        let _ = hooks::spawn_after_hooks(
+            Arc::clone(&self.backend),
+            app,
+            session_id,
+            spawned.handle.pid,
+            sink.clone(),
+        );
         let exit_signal = Arc::new(Notify::new());
 
         // 状态采集循环：在 start 返回前就挂上

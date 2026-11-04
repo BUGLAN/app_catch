@@ -28,6 +28,14 @@ export interface AppConfig {
   env?: Record<string, string>;
   icon?: string | null;
   tags?: string[];
+  hooks?: AppHooks;
+}
+
+/** 启动 hook：before 在主进程启动前执行（失败中止启动），after 在启动后后台执行。 */
+export interface AppHooks {
+  before?: string[];
+  after?: string[];
+  timeout_secs?: number | null;
 }
 
 /** 新建/编辑表单提交的载荷（cwd/icon 用空串表示未设置）。 */
@@ -40,6 +48,7 @@ export interface AppConfigInput {
   env: Record<string, string>;
   icon: string | null;
   tags: string[];
+  hooks?: AppHooks;
 }
 
 /** 退出信息。 */

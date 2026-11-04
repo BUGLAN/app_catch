@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use launcher_core::config::{AppConfig, AppId};
+use launcher_core::config::{AppConfig, AppHooks, AppId};
 use launcher_core::runtime::{
     CaptureConfig, ExitInfo, LogWriterConfig, SessionSnapshot, StatusSnapshot,
 };
@@ -192,6 +192,32 @@ pub struct AppConfigInput {
     /// 标签。
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 启动 hook；缺省表示没有 hook。
+    #[serde(default)]
+    pub hooks: HooksInput,
+}
+
+/// 启动 hook 的输入：每项一条 shell 命令，空行丢弃。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HooksInput {
+    /// 启动前执行的命令。
+    #[serde(default)]
+    pub before: Vec<String>,
+    /// 启动后执行的命令。
+    #[serde(default)]
+    pub after: Vec<String>,
+    /// 单条命令超时（秒）；`null` 表示走默认值。
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+/// 去掉首尾空白并丢弃空行。
+fn non_empty_lines(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 impl AppConfigInput {
@@ -255,6 +281,15 @@ impl AppConfigInput {
             }
         }
 
+        if self.hooks.timeout_secs == Some(0) {
+            return Err(CommandError::invalid_input("hook 超时必须大于 0 秒"));
+        }
+        let hooks = AppHooks {
+            before: non_empty_lines(self.hooks.before),
+            after: non_empty_lines(self.hooks.after),
+            timeout_secs: self.hooks.timeout_secs,
+        };
+
         Ok(AppConfig {
             id,
             name: name.to_string(),
@@ -264,6 +299,7 @@ impl AppConfigInput {
             env,
             icon,
             tags,
+            hooks,
         })
     }
 }
@@ -283,7 +319,24 @@ mod tests {
             env: BTreeMap::from([("PYTHONUNBUFFERED".to_string(), "1".to_string())]),
             icon: Some("E:/repo/demo/icon.png".to_string()),
             tags: vec!["python".to_string(), "tts".to_string()],
+            hooks: HooksInput {
+                before: vec!["  git pull --ff-only  ".to_string(), "   ".to_string()],
+                after: Vec::new(),
+                timeout_secs: None,
+            },
         }
+    }
+
+    #[test]
+    fn hooks_input_trims_and_drops_blank_lines() {
+        let config = valid_input().into_config().expect("合法输入应转换成功");
+        assert_eq!(config.hooks.before, vec!["git pull --ff-only".to_string()]);
+        assert!(config.hooks.after.is_empty());
+
+        let mut input = valid_input();
+        input.hooks.timeout_secs = Some(0);
+        let err = input.into_config().expect_err("超时为 0 应被拒绝");
+        assert_eq!(err.kind, "invalid_input");
     }
 
     #[test]

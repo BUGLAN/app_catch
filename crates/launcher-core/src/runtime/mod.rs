@@ -7,11 +7,13 @@
 //! | [`log_writer`] | JSONL 追加写入、批量 flush、按体积轮转、保留 N 片 |
 //! | [`capture`] | 管道逐行读取（不丢非法 UTF-8 行）、有界 channel、overflow 补写 |
 //! | [`status`] | 状态采集：`StatusProbe` 探针接口、窗口标题 / 监听端口采集、变化才写事件 |
+//! | [`hooks`] | 启动 hook：before（启动前，失败中止启动）/ after（启动后，后台执行） |
 //! | [`session_manager`] | 会话生命周期门面：start / stop / restart / status / recover |
 //!
 //! 平台进程能力由 [`crate::platform::ProcessBackend`] 提供，本层只依赖 trait。
 
 pub mod capture;
+pub mod hooks;
 pub mod log_writer;
 pub mod session_manager;
 pub mod status;

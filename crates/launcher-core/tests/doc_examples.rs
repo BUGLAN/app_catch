@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use launcher_core::config::{AppConfig, AppId, AppStore};
+use launcher_core::config::{AppConfig, AppHooks, AppId, AppStore};
 use launcher_core::session::{
     ExitReason, OutputEncoding, RunState, SessionEvent, SessionId, StreamKind,
     SESSION_EVENT_VERSION,
@@ -43,6 +43,11 @@ fn doc_full_config() -> AppConfig {
         ]),
         icon: Some(PathBuf::from("E:/repo/GPT-SoVITS/icon.png")),
         tags: vec!["python".to_string(), "tts".to_string()],
+        hooks: AppHooks {
+            before: vec!["git pull --ff-only".to_string()],
+            after: Vec::new(),
+            timeout_secs: None,
+        },
     }
 }
 

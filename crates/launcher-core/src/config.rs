@@ -135,6 +135,42 @@ pub struct AppConfig {
     /// 标签，便于 GUI 分组过滤。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// 启动 hook（启动前 / 启动后执行的 shell 命令），执行语义见 [`crate::runtime::hooks`]。
+    #[serde(default, skip_serializing_if = "AppHooks::is_empty")]
+    pub hooks: AppHooks,
+}
+
+/// 应用的启动 hook 配置（TOML 中的 `[hooks]` 表）。
+///
+/// - `before`：主进程启动前按顺序执行；任一条失败则中止启动；
+/// - `after`：主进程启动成功后在后台按顺序执行；失败只记日志，不影响主进程；
+/// - `timeout_secs`：单条命令超时，缺省 [`crate::runtime::hooks::DEFAULT_HOOK_TIMEOUT_SECS`]。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppHooks {
+    /// 启动前执行的命令，每项一条 shell 命令。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub before: Vec<String>,
+    /// 启动后执行的命令，每项一条 shell 命令。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<String>,
+    /// 单条命令超时（秒）；缺省走默认值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+impl AppHooks {
+    /// 没有任何 hook 配置（不落盘）。
+    pub fn is_empty(&self) -> bool {
+        self.before.is_empty() && self.after.is_empty() && self.timeout_secs.is_none()
+    }
+
+    /// 实际生效的单条超时（秒）。
+    pub fn effective_timeout_secs(&self) -> u64 {
+        match self.timeout_secs {
+            Some(secs) if secs > 0 => secs,
+            _ => crate::runtime::hooks::DEFAULT_HOOK_TIMEOUT_SECS,
+        }
+    }
 }
 
 /// `skip_serializing_if` 辅助：空路径不写入 TOML，避免产出 `cwd = ""` 这类噪音。
@@ -154,6 +190,7 @@ impl AppConfig {
             env: BTreeMap::new(),
             icon: None,
             tags: Vec::new(),
+            hooks: AppHooks::default(),
         }
     }
 }
@@ -320,6 +357,11 @@ mod tests {
             ]),
             icon: Some(PathBuf::from("E:/repo/GPT-SoVITS/icon.png")),
             tags: vec!["python".to_string(), "tts".to_string()],
+            hooks: AppHooks {
+                before: vec!["git pull --ff-only".to_string()],
+                after: vec!["echo started".to_string()],
+                timeout_secs: Some(120),
+            },
         }
     }
 
@@ -449,6 +491,7 @@ mod tests {
         assert!(!text.contains("[env]"), "空 env 不应写入:\n{text}");
         assert!(!text.contains("icon ="), "None icon 不应写入:\n{text}");
         assert!(!text.contains("tags ="), "空 tags 不应写入:\n{text}");
+        assert!(!text.contains("[hooks]"), "空 hooks 不应写入:\n{text}");
         assert_eq!(
             text.lines().filter(|l| !l.trim().is_empty()).count(),
             3,
@@ -469,6 +512,22 @@ mod tests {
         assert!(config.env.is_empty());
         assert_eq!(config.icon, None);
         assert!(config.tags.is_empty());
+        assert!(config.hooks.is_empty());
+    }
+
+    #[test]
+    fn hooks_table_parses_and_round_trips() {
+        let text = "id = \"h\"\nname = \"h\"\ncommand = \"pnpm\"\n\n[hooks]\nbefore = [\"git pull --ff-only\"]\n";
+        let config = AppStore::from_toml(Path::new("h.toml"), text).expect("hooks 应可解析");
+        assert_eq!(config.hooks.before, vec!["git pull --ff-only".to_string()]);
+        assert!(config.hooks.after.is_empty());
+        assert_eq!(
+            config.hooks.effective_timeout_secs(),
+            crate::runtime::hooks::DEFAULT_HOOK_TIMEOUT_SECS
+        );
+        let back = AppStore::to_toml(&config).expect("序列化失败");
+        assert!(back.contains("[hooks]"), "hooks 应以表输出:\n{back}");
+        assert_eq!(AppStore::from_toml(Path::new("h.toml"), &back).expect("再解析"), config);
     }
 
     #[test]

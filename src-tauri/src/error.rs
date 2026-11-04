@@ -63,6 +63,7 @@ impl From<AppCatchError> for CommandError {
             AppCatchError::Parse { .. } => "parse",
             AppCatchError::Serialize(_) => "serialize",
             AppCatchError::HomeDirUnavailable => "home_unavailable",
+            AppCatchError::HookFailed(_) => "hook_failed",
             AppCatchError::Unsupported(_) => "unsupported",
         };
         // message 复用 Display：launcher-core 的错误文案本身就是中文

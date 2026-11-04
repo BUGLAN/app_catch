@@ -19,7 +19,7 @@ pub mod platform;
 pub mod runtime;
 pub mod session;
 
-pub use config::{AppConfig, AppId, AppStore};
+pub use config::{AppConfig, AppHooks, AppId, AppStore};
 pub use error::{AppCatchError, Result};
 pub use runtime::{ExitInfo, SessionHandle, SessionManager, SessionSnapshot};
 pub use session::{ExitReason, RunState, SessionEvent, SessionId, StreamKind};

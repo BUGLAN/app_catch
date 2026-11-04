@@ -47,6 +47,10 @@ pub enum AppCatchError {
     #[error("无法确定用户主目录：请设置环境变量 APP_CATCH_HOME")]
     HomeDirUnavailable,
 
+    /// 启动 hook 执行失败（before 阶段失败会中止启动）。
+    #[error("{0}")]
+    HookFailed(String),
+
     /// 平台能力尚未实现（M1a 只定义接口，真实逻辑在 M1b 补齐）。
     #[error("平台能力尚未实现: {0}")]
     Unsupported(String),
