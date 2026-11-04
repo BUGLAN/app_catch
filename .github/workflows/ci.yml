@@ -26,13 +26,13 @@ jobs:
       matrix:
         # 日常校验只跑每个操作系统的主目标，全量目标留给 release.yml
         #
-        # macOS 固定到 macos-15：macos-latest 当前已指向刚迁移的 macOS 26 Arm64，
-        # 容量紧张时任务会排队超过 15 分钟并被 GitHub 取消（实测连续两次），
-        # 而 macOS 15 的 arm64 镜像容量成熟，能稳定拿到 runner。
+        # macOS 固定到 macos-15-intel：macos-latest 当前已指向刚迁移的 macOS 26 Arm64，
+        # macos-15 的 arm64 镜像同样排队超过 15 分钟并被 GitHub 取消（实测），
+        # 而 x64 的 macos-15-intel 容量稳定；aarch64 产物在 Intel runner 上交叉编译即可。
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: macos-15
+          - os: macos-15-intel
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
