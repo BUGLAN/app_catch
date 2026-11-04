@@ -7,9 +7,10 @@
 //!
 //! 平台差异由配置层承担（见 `tauri.conf.json` 与 `tauri.macos.conf.json`）：
 //! - Windows / Linux：`decorations: false`，标题栏完全由前端自绘；
-//! - macOS：`titleBarStyle: "Overlay"` + `decorations: true`，保留系统窗口的圆角、阴影
-//!   与边缘缩放，但用 [`hide_native_traffic_lights`] 把红黄绿藏起来，
-//!   窗口按钮与 Windows 一样由前端自绘，两端标题栏长得一样。
+//! - macOS：同样 `decorations: false`（tao 建的是 Borderless | Resizable 窗口，没有系统红黄绿），
+//!   再加 `transparent: true`，由 [`apply_window_corner_radius`] 把内容视图的 CALayer
+//!   裁成 [`WINDOW_CORNER_RADIUS`] 的圆角并重算阴影——外框圆角从此由我们决定，
+//!   与内容区（`tokens.css` 的 `--radius-window`）同半径。窗口按钮与 Windows 一样由前端自绘。
 //!
 //! 最大化状态用**事件**推给前端，而不是让前端轮询：
 //! 窗口拖动缩放时 `Resized` 会密集触发，这里只在「结果真的变了」时发一次，
@@ -83,15 +84,25 @@ pub fn window_close(window: WebviewWindow) -> Result<(), CommandError> {
     window.close().map_err(map_err)
 }
 
-/// macOS：隐藏系统红黄绿（关闭 / 最小化 / 缩放）。
+/// 窗口外框圆角半径（逻辑像素）。
 ///
-/// 只隐藏按钮、不去掉 `decorations`：无边框窗口在 macOS 上会丢掉圆角，
-/// 而 Overlay 标题栏 + 隐藏按钮能保住原生窗口外观。
-/// AppKit 在进出全屏、切换焦点后可能把按钮重新摆出来，所以由
-/// [`attach_maximize_watcher`] 在这些事件后再调一次；`setHidden` 幂等，重复调用没有代价。
+/// 必须与 `src/styles/tokens.css` 中 macOS 的 `--radius-window` 相同：内容区圆角对齐的就是它，
+/// 由 `tests::corner_radius_matches_css_token` 守住两边不漂移。
+/// 非 macOS 平台的外框圆角由系统决定（Windows 11 DWM 为 8px），这个常量只在 macOS 上生效。
+pub const WINDOW_CORNER_RADIUS: f64 = 13.0;
+
+/// macOS：把透明的无边框窗口裁成圆角，并让阴影跟着圆角走。
+///
+/// 做法只用公开 API：
+/// 1. 窗口不透明标记关掉、背景色设为 clear —— 圆角外的四个小角才会真正透明；
+/// 2. 内容视图开 layer，`cornerRadius` + `masksToBounds` 把 WebView 一起裁成圆角；
+/// 3. `invalidateShadow`：透明窗口的阴影按内容的 alpha 形状计算，形状变了要让系统重算。
+///
+/// 进出全屏、缩放之后 AppKit 可能重建或改动图层，所以由 [`attach_maximize_watcher`]
+/// 在 `Resized` 后再调一次；所有设置都是幂等的，重复调用没有代价。
 #[cfg(target_os = "macos")]
-pub fn hide_native_traffic_lights(window: &WebviewWindow) {
-    use objc2_app_kit::{NSWindow, NSWindowButton};
+pub fn apply_window_corner_radius(window: &WebviewWindow) {
+    use objc2_app_kit::{NSColor, NSWindow};
 
     let Ok(ptr) = window.ns_window() else {
         return;
@@ -102,15 +113,17 @@ pub fn hide_native_traffic_lights(window: &WebviewWindow) {
     let _ = window.run_on_main_thread(move || {
         // SAFETY: 地址来自 tao 持有的 NSWindow，窗口存活期间有效；当前在主线程
         let ns_window = unsafe { &*(addr as *const NSWindow) };
-        for button in [
-            NSWindowButton::CloseButton,
-            NSWindowButton::MiniaturizeButton,
-            NSWindowButton::ZoomButton,
-        ] {
-            if let Some(button) = ns_window.standardWindowButton(button) {
-                button.setHidden(true);
+        ns_window.setOpaque(false);
+        ns_window.setBackgroundColor(Some(&NSColor::clearColor()));
+        ns_window.setHasShadow(true);
+        if let Some(view) = ns_window.contentView() {
+            view.setWantsLayer(true);
+            if let Some(layer) = view.layer() {
+                layer.setCornerRadius(WINDOW_CORNER_RADIUS);
+                layer.setMasksToBounds(true);
             }
         }
+        ns_window.invalidateShadow();
     });
 }
 
@@ -128,17 +141,14 @@ pub fn attach_maximize_watcher(app: &tauri::AppHandle) {
     let handle = app.clone();
 
     #[cfg(target_os = "macos")]
-    hide_native_traffic_lights(&window);
+    apply_window_corner_radius(&window);
 
     window.on_window_event(move |event| {
-        // 进出全屏会触发 Resized，焦点切换也可能让 AppKit 重新显示红黄绿
+        // 缩放 / 进出全屏后图层可能被重建，阴影形状也要按新尺寸重算
         #[cfg(target_os = "macos")]
-        if matches!(
-            event,
-            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(_)
-        ) {
+        if matches!(event, tauri::WindowEvent::Resized(_)) {
             if let Some(window) = handle.get_webview_window(MAIN_WINDOW) {
-                hide_native_traffic_lights(&window);
+                apply_window_corner_radius(&window);
             }
         }
 
@@ -172,5 +182,22 @@ mod tests {
     #[test]
     fn main_window_label_matches_config() {
         assert_eq!(MAIN_WINDOW, "main");
+    }
+
+    #[test]
+    fn corner_radius_matches_css_token() {
+        // 外框圆角（Rust）与内容区圆角（CSS）必须同值，否则又回到「两处圆角不一样」
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/styles/tokens.css");
+        let css = std::fs::read_to_string(&path).expect("读取 tokens.css 失败");
+        let block_start = css
+            .find(":root[data-platform=\"macos\"]")
+            .expect("tokens.css 应有 macOS 平台覆盖块");
+        let block = &css[block_start..];
+        let block = &block[..block.find('}').expect("macOS 覆盖块应闭合")];
+        let expected = format!("--radius-window: {}px;", WINDOW_CORNER_RADIUS);
+        assert!(
+            block.contains(&expected),
+            "tokens.css 的 macOS --radius-window 应为 {WINDOW_CORNER_RADIUS}px，实际块:\n{block}"
+        );
     }
 }

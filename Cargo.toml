@@ -67,18 +67,24 @@ encoding_rs = "0.8"
 png = "0.18"
 # 仅测试用：临时目录隔离 APP_CATCH_HOME
 tempfile = "3"
-tauri = { version = "2" }
+# macos-private-api：macOS 透明窗口（自定义外框圆角，见 src-tauri/src/window.rs）必须打开；
+# 其他平台上这个 feature 不生效
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-build = { version = "2" }
 # 自动更新（桌面端）：从 GitHub Releases 拉 latest.json，校验 minisign 签名后安装
 tauri-plugin-updater = "2"
 # 更新安装完成后 relaunch（重启进新版本）
 tauri-plugin-process = "2"
-# macOS：隐藏系统红黄绿（NSWindow.standardWindowButton），与 tao 用的是同一版本，不额外引入新依赖
+# macOS：隐藏系统红黄绿、设置透明窗口与外框圆角（NSWindow / NSView），与 tao 用的是同一版本，不额外引入新依赖
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "NSButton",
+    "NSColor",
     "NSControl",
     "NSResponder",
     "NSView",
     "NSWindow",
+    "objc2-quartz-core",
 ] }
+# macOS：窗口外框圆角 = 内容视图 CALayer 的 cornerRadius（同样是 tao 已经引入的版本）
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer"] }

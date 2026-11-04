@@ -12,7 +12,7 @@
 - **状态不靠颜色单独编码**：徽标同时用形状（实心点 / 方块 / 菱形）+ 文本区分。
 - **响应式**：1180 / 980 / 760 / 480 / 360 五档；760 以下侧栏转为图标条并保持单列主区。
   任意宽度下都不出现文档级横向滚动。
-- **窗口外壳**：Windows/Linux 无边框 + 前端自绘标题栏；macOS 保留系统窗口外观（`titleBarStyle: Overlay`），但隐藏红黄绿，窗口按钮与 Windows 一样自绘。
+- **窗口外壳**：三端都是无边框 + 前端自绘标题栏与窗口按钮。macOS 额外开 `transparent: true`（需要 `macOSPrivateApi`），由 `src-tauri/src/window.rs` 把内容图层裁成 13px 圆角并重算阴影，外框圆角与内容区的 `--radius-window` 同值。
 - **对比度**：正文 ≥ 4.5:1，控件边界 ≥ 3:1。
 - **动效降级**：`prefers-reduced-motion` 下所有过渡降到 0.01ms；`forced-colors` 下补焦点框与边框。
 

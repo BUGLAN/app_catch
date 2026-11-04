@@ -53,6 +53,7 @@ version = "0.5.0"
 dependencies = [
  "launcher-core",
  "objc2-app-kit",
+ "objc2-quartz-core",
  "serde",
  "serde_json",
  "tauri",

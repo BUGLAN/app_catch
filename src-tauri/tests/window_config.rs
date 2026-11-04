@@ -73,24 +73,32 @@ fn base_config_disables_native_decorations_for_custom_titlebar() {
 }
 
 #[test]
-fn macos_patch_keeps_native_frame_with_overlay_style() {
+fn macos_patch_uses_transparent_borderless_window_for_custom_corners() {
     let windows = merged_windows(Some("tauri.macos.conf.json"));
     let main = windows.first().expect("必须覆盖主窗口配置");
 
     assert!(
-        main.decorations,
-        "macOS 必须保留系统装饰，否则窗口会丢掉圆角与原生边缘缩放（红黄绿由 window.rs 隐藏）"
+        !main.decorations,
+        "macOS 走无边框窗口：外框圆角由 window.rs 给内容图层设 cornerRadius 决定，系统外框会把它盖掉"
     );
-    assert_eq!(
-        main.title_bar_style,
-        tauri::utils::TitleBarStyle::Overlay,
-        "需要 hiddenInset 语义：透明标题栏 + 内容延伸到标题栏下"
-    );
-    assert!(main.hidden_title, "隐藏窗口标题文字，标题栏完全由前端绘制");
     assert!(
-        main.traffic_light_position.is_none(),
-        "红黄绿已被隐藏，不应再给它定坐标（Tauri 会在每次缩放时重新摆放按钮）"
+        main.transparent,
+        "必须透明：圆角外的四个小角要透出桌面，否则裁出来的是带底色的方角"
     );
+    assert_eq!(main.shadow, true, "无边框窗口仍要保留系统阴影");
+    assert!(main.resizable, "无边框窗口仍必须可缩放");
+    assert!(
+        main.background_color.is_none(),
+        "不能设窗口底色：底色会填满圆角外的区域，透明就白做了"
+    );
+}
+
+#[test]
+fn macos_private_api_matches_cargo_feature() {
+    // 透明窗口在 macOS 上依赖 macOSPrivateApi；tauri-build 要求它与 Cargo 的
+    // macos-private-api feature 一致，所以写在主配置里，三端构建都满足这条校验
+    let base: Value = serde_json::from_str(&read_config("tauri.conf.json")).expect("合法 JSON");
+    assert_eq!(base["app"]["macOSPrivateApi"], Value::Bool(true));
 }
 
 #[test]

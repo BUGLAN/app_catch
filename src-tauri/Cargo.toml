@@ -30,6 +30,8 @@ tokio = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 # 隐藏系统红黄绿：窗口按钮统一由前端自绘（见 src/window.rs::hide_native_traffic_lights）
 objc2-app-kit = { workspace = true }
+# 窗口外框圆角：给内容视图的 CALayer 设 cornerRadius（见 src/window.rs::apply_window_corner_radius）
+objc2-quartz-core = { workspace = true }
 
 [dev-dependencies]
 # 命令层测试用临时目录隔离 APP_CATCH_HOME
