@@ -61,7 +61,7 @@ export function Titlebar({
     <header className="titlebar" aria-label="应用标题栏" data-tauri-drag-region="deep">
       <div className="titlebar-brand">
         <span className="titlebar-mark" aria-hidden="true">
-          <BrandMark size={22} />
+          <BrandMark size={18} />
         </span>
         <span className="titlebar-name">app_catch</span>
       </div>
@@ -118,7 +118,7 @@ export function Titlebar({
           aria-keyshortcuts={NEW_APP_SHORTCUT === "⌘N" ? "Meta+N" : "Control+N"}
           title={`新建应用（${NEW_APP_SHORTCUT}）`}
         >
-          <IconPlus size={16} />
+          <IconPlus size={15} />
         </button>
       </div>
 

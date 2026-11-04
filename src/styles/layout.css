@@ -3,7 +3,7 @@
  *
  * 结构（高度全部由 flex 分配，不使用 100vh）：
  *   .shell
- *     .titlebar        48px（自绘，见 chrome.css）
+ *     .titlebar        38px（自绘，见 chrome.css）
  *     .body            flex:1
  *        .sidebar      56–320px（抽屉，见 chrome.css）
  *        .main         剩余空间，内部纵向滚动
@@ -23,6 +23,23 @@
   /* 不用 100vh：WebView 里 100vh 会包含被遮挡的区域 */
   min-height: 0;
   background: var(--surface-base);
+}
+
+/*
+ * 窗口描边：与按钮、徽标、面板同一条边框（1px var(--border)），三端一致。
+ * macOS 是无边框透明窗口（见 src-tauri/src/window.rs），系统不再画外框细线；
+ * Windows / Linux 同样是无边框窗口。统一由这层不接收鼠标的覆盖层画。
+ * 必须是覆盖层而不是 .shell 自己的边框 / inset 阴影：子元素（标题栏、侧栏）的实色背景会把它盖住。
+ * 圆角与窗口外框同值（--radius-window），描边才会沿着圆角走。
+ */
+.shell::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-window-rim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-window);
+  pointer-events: none;
 }
 
 /* ---------- 主体：抽屉 + 主区 ---------- */

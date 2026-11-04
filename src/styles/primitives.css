@@ -55,7 +55,7 @@
   transform: none;
 }
 
-/* 标题栏里的主按钮略矮：48px 的 Header 里塞 30px 会显得笨重 */
+/* 标题栏里的主按钮略矮：38px 的 Header 里塞 30px 会显得笨重 */
 .btn-sm {
   min-height: 26px;
   padding: 0 var(--space-2-5);
@@ -157,75 +157,70 @@
   flex: none;
 }
 
-/* ---------- 徽标 ---------- */
+/* ---------- 徽标 ----------
+ * 几何与 .btn.btn-mini 完全一致（同高、同内边距、同圆角、同字号字重、同 1px 描边），
+ * 放在同一行表格里时（状态徽标 + 「停止」按钮）上下沿与圆角对齐，不再一个胶囊一个方块。
+ * 容器保持中性底色；状态只由前面的小圆点承担（颜色 + 形状双重编码），
+ * 避免整块染色后比旁边的按钮还抢眼。没有 hover / 手型光标，和可点的按钮区分开。
+ */
 
 .badge {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
   flex: none;
-  height: 18px;
+  height: var(--control-height-sm);
   padding: 0 var(--space-2);
-  border: 1px solid transparent;
-  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-overlay);
+  color: var(--text-primary);
   font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
   line-height: 1;
   white-space: nowrap;
+  cursor: default;
 }
 
-/* 形状 + 颜色双重编码：即使看不出颜色也能靠圆点的形态区分 */
+/* 状态点：实心 6px；running 圆、exited 方、crashed 菱形 */
 .badge::before {
   content: "";
   flex: none;
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: var(--radius-full);
-  border: 1.5px solid currentColor;
+  background: currentColor;
 }
 
-.badge-idle {
-  color: var(--text-muted);
-  border-color: var(--border);
+.badge-idle,
+.badge-exited {
+  color: var(--text-secondary);
+}
+
+.badge-idle::before {
   background: transparent;
-}
-
-.badge-running {
-  color: var(--success);
-  background: var(--success-soft);
-  border-color: var(--success-border);
+  box-shadow: inset 0 0 0 1.5px var(--text-muted);
 }
 
 .badge-running::before {
-  background: currentColor;
-  border-color: currentColor;
-}
-
-.badge-exited {
-  color: var(--text-secondary);
-  background: var(--surface-overlay);
-  border-color: var(--border);
+  background: var(--success);
 }
 
 .badge-exited::before {
-  border-radius: var(--radius-xs);
-  background: currentColor;
-  border-color: currentColor;
+  border-radius: 0;
+  background: var(--text-muted);
 }
 
 .badge-crashed {
-  color: var(--danger);
-  background: var(--danger-soft);
-  border-color: var(--danger-border);
+  color: var(--danger-text);
 }
 
 .badge-crashed::before {
-  border-radius: 0;
-  background: currentColor;
-  border-color: currentColor;
-  transform: rotate(45deg);
   width: 5px;
   height: 5px;
+  border-radius: 0;
+  background: var(--danger);
+  transform: rotate(45deg);
 }
 
 /* ---------- 标签 / 计数 ---------- */
@@ -263,7 +258,8 @@
   min-width: 20px;
   height: 18px;
   padding: 0 var(--space-1-5);
-  border-radius: var(--radius-full);
+  /* 与按钮 / 徽标同一套小圆角，不用胶囊 */
+  border-radius: var(--radius-sm);
   background: var(--surface-overlay);
   color: var(--text-secondary);
   font-size: var(--text-2xs);
@@ -277,7 +273,7 @@
   width: 100%;
   min-height: var(--control-height);
   padding: var(--space-1) var(--space-2-5);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface-inset);
   color: var(--text-primary);
@@ -466,7 +462,7 @@
   display: inline-flex;
   gap: var(--space-0-5);
   padding: var(--space-0-5);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface-inset);
 }
@@ -633,8 +629,9 @@
 .table-scroll {
   min-width: 0;
   overflow-x: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  /* 与系统窗口外框同半径（见 tokens.css --radius-window） */
+  border-radius: var(--radius-window);
 }
 
 .data-table {
@@ -754,7 +751,7 @@
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface-inset);
   /*
@@ -809,7 +806,7 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-6);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   color: var(--text-muted);
   font-size: var(--text-xs);
@@ -1077,7 +1074,7 @@
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-5);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-panel);
 }

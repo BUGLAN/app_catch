@@ -164,10 +164,13 @@ export function SessionDetail({ session, allSessions }: Props) {
 
   const live = allSessions.some((item) => item.session_id === snapshot.session_id);
 
+  const describeExit = (exit: NonNullable<typeof lastExit>) =>
+    `${exit.code === null ? "无退出码" : `码 ${exit.code}`} · ${exitReasonLabel(exit.reason)}`;
+
+  // 字段顺序与上方「活跃会话」表格一致（会话 / PID / 状态 / 启动时间 / 退出），列宽也共用一套
   const statusItems = [
     {
       label: "会话",
-      wide: true,
       value: (
         <code className="session-id" title={snapshot.session_id}>
           {snapshot.session_id}
@@ -187,8 +190,22 @@ export function SessionDetail({ session, allSessions }: Props) {
       value: <span className="mono">{formatDateTime(snapshot.started_at)}</span>,
     },
     {
+      label: "退出",
+      value: lastExit ? (
+        <span className="mono" title={describeExit(lastExit)}>
+          {describeExit(lastExit)}
+        </span>
+      ) : (
+        <span className="muted">—</span>
+      ),
+    },
+    {
       label: "窗口标题",
-      value: windowTitle ?? <span className="muted">未采集到</span>,
+      value: windowTitle ? (
+        <span title={windowTitle}>{windowTitle}</span>
+      ) : (
+        <span className="muted">未采集到</span>
+      ),
     },
     {
       label: "监听端口",
@@ -196,17 +213,6 @@ export function SessionDetail({ session, allSessions }: Props) {
         <span className="mono">
           {ports.length > 0 ? ports.join(", ") : <span className="muted">无</span>}
         </span>
-      ),
-    },
-    {
-      label: "退出",
-      value: lastExit ? (
-        <span className="mono">
-          {lastExit.code === null ? "无退出码" : `码 ${lastExit.code}`} ·{" "}
-          {exitReasonLabel(lastExit.reason)}
-        </span>
-      ) : (
-        <span className="muted">—</span>
       ),
     },
   ];
@@ -219,10 +225,7 @@ export function SessionDetail({ session, allSessions }: Props) {
 
       <div className="session-statusbar">
         {statusItems.map((item) => (
-          <div
-            className={"status-cell" + (item.wide ? " status-cell-wide" : "")}
-            key={item.label}
-          >
+          <div className="status-cell" key={item.label}>
             <span className="status-label">{item.label}</span>
             <span className="status-value">{item.value}</span>
           </div>

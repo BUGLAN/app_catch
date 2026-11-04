@@ -227,7 +227,7 @@ code,
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   background: var(--surface-inset);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   color: var(--text-secondary);
   overflow-wrap: anywhere;
 }

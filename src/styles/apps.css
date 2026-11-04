@@ -198,23 +198,64 @@
   gap: var(--space-1);
 }
 
-/* ---------- 会话状态条 ----------
- * 用 grid 自适应列。7 个格子（会话 id 占 2 列 = 8 格）要排进一行，
- * 列宽下限必须够小：1024 的默认窗口扣掉 220 侧栏与内边距后可用约 760px，
- * 760 / 8 ≈ 95px，取 96px 才能一行排满；再大就会掉成 6+1 的断行。
+/* ---------- 会话列与状态条：共用一套列宽 ----------
+ * 上方「活跃会话」表格与下方会话状态条展示的是同一批字段（会话 / PID / 状态 / 启动时间 / 退出），
+ * 两者各自排版时同名字段左沿对不齐。两边共用 tokens.css 里的 --col-* 列宽：
+ *   - 表格用 table-layout: fixed + <colgroup> 套用；
+ *   - 状态条用 grid 套用同样的前五列，多出来的「窗口标题 / 监听端口」排在「退出」之后，
+ *     占表格里「退出」列剩余空间与操作列的位置。
+ * 两个容器都是 1px 描边、内容区等宽，每格水平内边距都是 --space-2，因此文字左沿逐列对齐。
  */
+
+.session-table {
+  table-layout: fixed;
+  /* 低于这个宽度交给 .table-scroll 横向滚动，而不是把列挤到看不清 */
+  min-width: 560px;
+}
+
+.session-table .col-session {
+  width: var(--col-session);
+}
+
+.session-table .col-pid {
+  width: var(--col-pid);
+}
+
+.session-table .col-state {
+  width: var(--col-state);
+}
+
+.session-table .col-started {
+  width: var(--col-started);
+}
+
+/* 操作列：放一个 btn-mini（「停止」）+ 两侧内边距 */
+.session-table .col-actions {
+  width: 72px;
+}
+
+.session-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .session-panel {
   gap: var(--space-4);
+  container-type: inline-size;
 }
 
 .session-statusbar {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-  gap: var(--space-3) var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  grid-template-columns:
+    var(--col-session) var(--col-pid) var(--col-state) var(--col-started)
+    minmax(0, 1fr) minmax(0, 1fr) minmax(64px, 0.8fr);
+  row-gap: var(--space-3);
+  /* 水平方向不留内边距、列间距为 0：每格自带 --space-2，与表格单元格一致 */
+  padding: var(--space-3) 0;
+  border: 1px solid var(--border);
+  /* 与上方会话表格容器同半径，也就与系统窗口外框同半径 */
+  border-radius: var(--radius-window);
   background: var(--surface-inset);
 }
 
@@ -222,12 +263,9 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--space-0-5);
+  gap: var(--space-1);
   min-width: 0;
-}
-
-.status-cell-wide {
-  grid-column: span 2;
+  padding: 0 var(--space-2);
 }
 
 .status-label {
@@ -235,30 +273,56 @@
   font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
   letter-spacing: var(--tracking-cn);
+  white-space: nowrap;
 }
 
+/*
+ * 每个值都占满与状态徽标同高的一行并垂直居中：
+ * 徽标 24px、纯文字约 19px，不统一行高时「状态」一格的文字会比旁边低一截。
+ */
 .status-value {
+  display: flex;
+  align-items: center;
   max-width: 100%;
   min-width: 0;
+  min-height: var(--control-height-sm);
   color: var(--text-secondary);
   font-size: var(--text-xs);
   line-height: var(--leading-normal);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
-.status-value .badge {
-  /* 徽标按内容宽度，不要被网格拉伸 */
-  align-self: flex-start;
+/* 文字值超出列宽时截断；完整内容在 title 里悬停可看 */
+.status-value > span,
+.status-value > code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .session-id {
   display: block;
+  overflow: hidden;
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   line-height: var(--leading-normal);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   user-select: text;
+}
+
+/* 面板很窄时七列放不下：退回按内容宽度自动换行，不再追求与表格逐列对齐 */
+@container (max-width: 600px) {
+  .session-statusbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3) var(--space-2);
+  }
+
+  .status-cell {
+    max-width: 220px;
+  }
 }
 
 /* ---------- 会话工具栏 ---------- */

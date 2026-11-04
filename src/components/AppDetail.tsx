@@ -184,6 +184,15 @@ export function AppDetail({
       ) : (
         <div className="table-scroll">
           <table className="data-table session-table" aria-label="该应用的会话列表">
+            {/* 列宽与下方会话状态条共用一套（见 apps.css「会话列与状态条」） */}
+            <colgroup>
+              <col className="col-session" />
+              <col className="col-pid" />
+              <col className="col-state" />
+              <col className="col-started" />
+              <col />
+              <col className="col-actions" />
+            </colgroup>
             <thead>
               <tr>
                 <th scope="col">会话</th>

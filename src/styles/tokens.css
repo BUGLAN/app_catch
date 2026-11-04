@@ -121,7 +121,6 @@
   /* 浮层 / 工具提示：浅色主题下也保持深色，形成"抬起"的层 */
   --tooltip-bg: #2c2c2e;
   --tooltip-fg: #f5f5f7;
-  --tooltip-border: rgba(255, 255, 255, 0.12);
 
   /* ---------- 6. 间距刻度（4 的倍数，2 用于贴合） ---------- */
   --space-0-5: 2px;
@@ -143,6 +142,12 @@
   --radius-lg: 10px;  /* 卡片 */
   --radius-xl: 12px;  /* 弹窗 / 大浮层（与 macOS sheet 一致） */
   --radius-full: 999px;
+  /*
+   * 与系统窗口外框同半径：窗口圆角由系统绘制，前端改不了，内容区反过来对齐它。
+   * Windows 11 无边框窗口由 DWM 圆角 8px；Linux 依窗口管理器而定，取同值。
+   * macOS 的值见下方 [data-platform="macos"]。
+   */
+  --radius-window: 8px;
 
   /* ---------- 8. 字体 ---------- */
   /* 系统字体栈：macOS 用 SF，Windows 用 Segoe UI，中文回落苹方 / 微软雅黑 */
@@ -213,9 +218,15 @@
   --stagger-index: 0;
 
   /* ---------- 11. 尺寸 ---------- */
-  --titlebar-height: 48px;
-  --window-control-width: 46px;
+  --titlebar-height: 38px;
+  --window-control-width: 40px;
   --window-control-height: 32px;
+
+  /* 会话表格与会话状态条共用的列宽（apps.css「会话列与状态条」），保证两块同名字段左沿对齐 */
+  --col-session: 18%;
+  --col-pid: 11%;
+  --col-state: 13%;
+  --col-started: 21%;
 
   /* 侧栏（抽屉）：折叠 = 56；展开 184–320，默认 220（与 useSidebar.ts 一致） */
   --rail-width: 220px;
@@ -247,6 +258,7 @@
   --z-modal: 40;
   --z-tooltip: 45;
   --z-toast: 50;
+  --z-window-rim: 100;  /* 窗口描边：压在一切之上，且不接收鼠标 */
 
   /* ---------- 13. 内容宽度 ---------- */
   /*
@@ -326,4 +338,12 @@
   --shadow-lg: 0 20px 48px -12px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.06);
   --shadow-pop: 0 8px 24px -8px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.06);
   --shadow-inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/*
+ * macOS 窗口外框圆角由我们自己裁（src-tauri/src/window.rs 的 WINDOW_CORNER_RADIUS），
+ * 这里必须与它同值，Rust 侧有测试守住。只覆盖这一个尺寸 token，其余 token 三端一致。
+ */
+:root[data-platform="macos"] {
+  --radius-window: 13px;
 }
