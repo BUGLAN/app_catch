@@ -604,9 +604,20 @@ impl ProcessBackend for WindowsProcessBackend {
         Box::pin(async move {
             // 有缓存（本进程 spawn 的）：Job 一次性回收整棵树
             if let Some((_child, job)) = self.peek_child(handle) {
-                // 必须在终止前记录子孙 pid：父进程一死，它们会被系统重新挂到别的父进程上，
+                // 必须在终止前记录待核对的 pid：父进程一死，它们会被系统重新挂到别的父进程上，
                 // 之后再按父子关系枚举就找不到它们了，也就无法确认是否真的被回收。
-                let descendants = collect_descendants(handle.pid);
+                //
+                // 优先用 Job 成员表而不是 collect_descendants：后者按 parent-pid 扫全系统快照，
+                // 一旦根进程已退出、pid 被复用（或快照里残留陈旧 PPID），就会把大量无关进程
+                // 误判成子孙（CI runner 上实测一次枚举出上百个），复查时自然一直「存活」并误报失败。
+                // Job 成员关系由内核维护，既准确又便宜；只有拿不到 Job 句柄时才回退 BFS。
+                let descendants = match job.process_ids() {
+                    Some(mut pids) => {
+                        pids.retain(|pid| *pid != handle.pid);
+                        pids
+                    }
+                    None => collect_descendants(handle.pid),
+                };
                 let terminate_result = job.terminate();
 
                 // 不在这里 Child::wait：那会和等待退出的任务抢同一把锁。
