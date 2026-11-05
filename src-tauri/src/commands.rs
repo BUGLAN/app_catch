@@ -354,6 +354,57 @@ pub fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+// ---------------------------------------------------------------------------
+// 工作目录：选择与项目识别
+// ---------------------------------------------------------------------------
+
+/// 弹出原生「选择文件夹」对话框；用户取消返回 `null`。
+///
+/// 用回调版 `pick_folder` + oneshot 而不是 `blocking_pick_folder`：
+/// 后者会阻塞当前 tokio worker，macOS 上对话框还必须由主线程驱动。
+#[tauri::command]
+pub async fn pick_directory(
+    app: tauri::AppHandle,
+    default_path: Option<String>,
+) -> Result<Option<String>, CommandError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut builder = app.dialog().file().set_title("选择工作目录");
+    if let Some(path) = default_path.filter(|p| !p.trim().is_empty()) {
+        let path = std::path::PathBuf::from(path.trim());
+        if path.is_dir() {
+            builder = builder.set_directory(path);
+        }
+    }
+    builder.pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let picked = rx
+        .await
+        .map_err(|_| CommandError::new("dialog", "文件夹选择框异常关闭"))?;
+    match picked {
+        None => Ok(None),
+        Some(path) => {
+            let path = path
+                .into_path()
+                .map_err(|e| CommandError::new("dialog", format!("无法解析所选路径：{e}")))?;
+            Ok(Some(path.to_string_lossy().into_owned()))
+        }
+    }
+}
+
+/// 识别工作目录下的项目类型，给出启动命令候选（只读文件，不执行任何东西）。
+#[tauri::command]
+pub async fn detect_project(
+    dir: String,
+) -> Result<launcher_core::project::ProjectDetection, CommandError> {
+    let dir = std::path::PathBuf::from(dir.trim());
+    tokio::task::spawn_blocking(move || launcher_core::project::detect_project(&dir))
+        .await
+        .map_err(|e| CommandError::new("internal", format!("项目识别任务失败：{e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

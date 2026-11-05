@@ -385,6 +385,56 @@
   color: var(--danger);
 }
 
+/* 输入框 + 尾随按钮（工作目录「选择…」） */
+.input-row {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.input-row > .input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 工作目录识别出的启动命令候选 */
+.detect-panel {
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+}
+
+.detect-head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.detect-head > .icon {
+  color: var(--accent-text);
+  flex: none;
+}
+
+.detect-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+}
+
+.detect-chip {
+  font-family: var(--font-mono);
+}
+
+.detect-chip.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
 .field-error,
 .form-summary-error {
   color: var(--danger);

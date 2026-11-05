@@ -16,6 +16,7 @@ pub mod error;
 pub mod fsutil;
 pub mod paths;
 pub mod platform;
+pub mod project;
 pub mod runtime;
 pub mod session;
 

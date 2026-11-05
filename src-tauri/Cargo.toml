@@ -21,6 +21,8 @@ tauri = { workspace = true }
 tauri-plugin-updater = { workspace = true }
 # 更新装完后的「重启应用」按钮需要 relaunch
 tauri-plugin-process = { workspace = true }
+# 工作目录选择：原生文件夹选择框
+tauri-plugin-dialog = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 launcher-core = { workspace = true }

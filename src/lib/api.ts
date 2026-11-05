@@ -17,6 +17,7 @@ import type {
   BootReport,
   CaptureConfig,
   CommandError,
+  ProjectDetection,
   SessionEventsPage,
   SessionSnapshot,
 } from "./types";
@@ -127,6 +128,12 @@ export const api = {
     call<string | null>("get_app_icon", { appId, force }),
   /** 内置默认图标（PNG data URL），永远可用。 */
   defaultIcon: () => call<string>("default_icon"),
+
+  /** 弹出原生「选择文件夹」对话框；用户取消返回 `null`。 */
+  pickDirectory: (defaultPath?: string) =>
+    call<string | null>("pick_directory", { defaultPath: defaultPath ?? null }),
+  /** 识别工作目录的项目类型并给出启动候选（只读文件）。 */
+  detectProject: (dir: string) => call<ProjectDetection>("detect_project", { dir }),
 };
 
 /**

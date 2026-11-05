@@ -31,6 +31,8 @@ pub fn run() {
     tauri::Builder::default()
         // relaunch 属于进程能力，任何平台都可能用到（更新装完后的重启按钮）
         .plugin(tauri_plugin_process::init())
+        // 新建应用时「选择工作目录」用的原生文件夹选择框
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 初始化失败（例如主目录不可用）直接把错误交给 Tauri 报错退出，
             // 而不是带着半初始化状态继续跑——那样界面会全是莫名其妙的错误。
@@ -63,6 +65,8 @@ pub fn run() {
             commands::recover_sessions,
             commands::get_app_icon,
             commands::default_icon,
+            commands::pick_directory,
+            commands::detect_project,
             window::window_minimize,
             window::window_maximize,
             window::window_unmaximize,

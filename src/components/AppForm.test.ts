@@ -1,7 +1,16 @@
 /** AppForm 的纯逻辑测试：id 校验、参数/环境变量/标签解析。 */
 import { describe, expect, it } from "vitest";
 
-import { APP_ID_PATTERN, parseArgs, parseEnv, parseTags, validateAppId } from "../components/AppForm";
+import {
+  APP_ID_PATTERN,
+  kindLabel,
+  matchesSuggestion,
+  parseArgs,
+  parseEnv,
+  parseTags,
+  suggestAppId,
+  validateAppId,
+} from "../components/AppForm";
 
 describe("validateAppId", () => {
   it("接受合法 id", () => {
@@ -83,5 +92,28 @@ describe("parseTags（逗号分隔）", () => {
   it("空输入返回空数组", () => {
     expect(parseTags("")).toEqual([]);
     expect(parseTags("  ,  ")).toEqual([]);
+  });
+});
+
+describe("项目识别辅助", () => {
+  it("kindLabel 带出包管理器", () => {
+    expect(kindLabel("node:pnpm")).toBe("Node（pnpm）");
+    expect(kindLabel("python")).toBe("Python");
+    expect(kindLabel("docker-compose")).toBe("Docker Compose");
+    expect(kindLabel("unknown")).toBe("unknown");
+  });
+
+  it("suggestAppId 产出合法 id", () => {
+    expect(suggestAppId("GPT-SoVITS")).toBe("GPT-SoVITS");
+    expect(suggestAppId("my app.v2")).toBe("my-app-v2");
+    expect(suggestAppId("中文项目")).toBe("");
+    expect(validateAppId(suggestAppId("x".repeat(80)))).toBeNull();
+  });
+
+  it("matchesSuggestion 按命令与逐个参数比较", () => {
+    const s = { label: "dev", command: "pnpm", args: ["run", "dev"], source: "" };
+    expect(matchesSuggestion(s, " pnpm ", "run\ndev\n")).toBe(true);
+    expect(matchesSuggestion(s, "pnpm", "run\nbuild")).toBe(false);
+    expect(matchesSuggestion(s, "npm", "run\ndev")).toBe(false);
   });
 });

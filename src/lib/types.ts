@@ -151,3 +151,23 @@ export interface BootReport {
   recovered: SessionSnapshot[];
   error: string | null;
 }
+
+/** 一条启动候选（与 launcher-core::project::CommandSuggestion 同形）。 */
+export interface CommandSuggestion {
+  /** 短标签，例如 `dev`、`main.py`。 */
+  label: string;
+  command: string;
+  args: string[];
+  /** 出处，例如 `package.json scripts.dev`。 */
+  source: string;
+}
+
+/** 工作目录的项目识别结果。 */
+export interface ProjectDetection {
+  /** 项目类型，例如 `node:pnpm` / `python` / `rust`，按优先级排列。 */
+  kinds: string[];
+  /** 清单里声明的项目名（没有则为目录名）。 */
+  name: string | null;
+  /** 启动候选，第一条最推荐。 */
+  suggestions: CommandSuggestion[];
+}

@@ -120,6 +120,22 @@ export function IconInfo({ size = 16, className }: IconProps) {
   );
 }
 
+export function IconFolder({ size = 16, className }: IconProps) {
+  return (
+    <svg {...svgProps(size, className)}>
+      <path d="M2.5 4.6c0-.6.5-1.1 1.1-1.1h2.6l1.4 1.5h4.8c.6 0 1.1.5 1.1 1.1v5.8c0 .6-.5 1.1-1.1 1.1H3.6c-.6 0-1.1-.5-1.1-1.1V4.6Z" />
+    </svg>
+  );
+}
+
+export function IconSparkle({ size = 16, className }: IconProps) {
+  return (
+    <svg {...svgProps(size, className)}>
+      <path d="M8 2.5 9.2 6.8 13.5 8 9.2 9.2 8 13.5 6.8 9.2 2.5 8 6.8 6.8 8 2.5Z" />
+    </svg>
+  );
+}
+
 export function IconTerminal({ size = 16, className }: IconProps) {
   return (
     <svg {...svgProps(size, className)}>

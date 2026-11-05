@@ -14,10 +14,11 @@
  *     但「保存」按钮可用性判定保持原逻辑不变；
  *   - 底部错误汇总改成带图标的提示块。
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type InputHTMLAttributes } from "react";
 
-import type { AppConfig, AppConfigInput } from "../lib/types";
-import { IconAlert } from "./ui/Icons";
+import { api, isHosted } from "../lib/api";
+import type { AppConfig, AppConfigInput, CommandSuggestion, ProjectDetection } from "../lib/types";
+import { IconAlert, IconFolder, IconSparkle } from "./ui/Icons";
 import { Field } from "./ui/Field";
 
 interface Props {
@@ -110,6 +111,72 @@ export function validateHookTimeout(raw: string): string | null {
   return /^[1-9][0-9]*$/.test(value) ? null : "hook 超时必须是正整数（秒）";
 }
 
+/** 项目类型的中文展示名。 */
+export function kindLabel(kind: string): string {
+  const [base, detail] = kind.split(":");
+  const names: Record<string, string> = {
+    node: "Node",
+    python: "Python",
+    rust: "Rust",
+    go: "Go",
+    "docker-compose": "Docker Compose",
+    script: "启动脚本",
+  };
+  const name = names[base ?? ""] ?? base ?? kind;
+  return detail ? `${name}（${detail}）` : name;
+}
+
+/** 从项目名推一个合法 id：非法字符换成 -，首尾 - 去掉，截到 64。空串表示推不出来。 */
+export function suggestAppId(name: string): string {
+  return name
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+/** 当前表单里的命令与参数是否正是这条候选。 */
+export function matchesSuggestion(
+  suggestion: CommandSuggestion,
+  command: string,
+  argsText: string
+): boolean {
+  const args = parseArgs(argsText);
+  return (
+    suggestion.command === command.trim() &&
+    suggestion.args.length === args.length &&
+    suggestion.args.every((arg, index) => arg === args[index])
+  );
+}
+
+/**
+ * 工作目录输入框 + 「选择…」按钮。
+ *
+ * Field 会把 id / aria-* 注入到它的直接子元素上；这里把这些属性原样转给 input，
+ * 这样 label 仍然指向真正的输入框，读屏与点击标签聚焦都不受影响。
+ */
+function DirectoryInput({
+  onPick,
+  pickDisabled,
+  ...inputProps
+}: InputHTMLAttributes<HTMLInputElement> & { onPick: () => void; pickDisabled: boolean }) {
+  return (
+    <div className="input-row">
+      <input {...inputProps} />
+      <button
+        type="button"
+        className="btn"
+        onClick={onPick}
+        disabled={pickDisabled}
+        title={pickDisabled && !isHosted() ? "需要在桌面应用中使用" : undefined}
+      >
+        <IconFolder size={14} />
+        选择…
+      </button>
+    </div>
+  );
+}
+
 /** 把标签数组还原成逗号分隔文本。 */
 function joinTags(tags: string[] | undefined): string {
   return (tags ?? []).join(", ");
@@ -139,6 +206,85 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
     initial?.hooks?.timeout_secs != null ? String(initial.hooks.timeout_secs) : ""
   );
   const [submitted, setSubmitted] = useState(false);
+
+  /** 最近一次识别结果（带上它对应的目录，防止旧请求覆盖新输入）。 */
+  const [detection, setDetection] = useState<{ dir: string; result: ProjectDetection } | null>(null);
+  /** 通过「选择…」选中的目录：识别完成后若命令为空，自动套用首选候选。 */
+  const autoApplyDir = useRef<string | null>(null);
+
+  const applySuggestion = (suggestion: CommandSuggestion, projectName: string | null) => {
+    setCommand(suggestion.command);
+    setArgsText(suggestion.args.join("\n"));
+    // 名称 / id 只在用户还没填时顺手补上，不覆盖已有输入
+    if (projectName) {
+      setName((prev) => (prev.trim().length > 0 ? prev : projectName));
+      if (isNew) {
+        setId((prev) => (prev.trim().length > 0 ? prev : suggestAppId(projectName)));
+      }
+    }
+  };
+
+  // 工作目录变化后（防抖）识别项目类型
+  useEffect(() => {
+    const dir = cwd.trim();
+    if (dir.length === 0 || !isHosted()) {
+      setDetection(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      api
+        .detectProject(dir)
+        .then((result) => {
+          if (!cancelled) {
+            setDetection({ dir, result });
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setDetection(null);
+          }
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [cwd]);
+
+  // 选择目录后的自动填充：只在命令还空着时套用首选候选
+  useEffect(() => {
+    if (!detection || autoApplyDir.current !== detection.dir) {
+      return;
+    }
+    autoApplyDir.current = null;
+    const first = detection.result.suggestions[0];
+    if (first && command.trim().length === 0) {
+      applySuggestion(first, detection.result.name);
+    } else if (detection.result.name) {
+      const projectName = detection.result.name;
+      setName((prev) => (prev.trim().length > 0 ? prev : projectName));
+      if (isNew) {
+        setId((prev) => (prev.trim().length > 0 ? prev : suggestAppId(projectName)));
+      }
+    }
+    // applySuggestion / command 只在识别结果到达那一刻读取，不需要作为依赖重跑
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detection]);
+
+  const handlePickDirectory = async () => {
+    try {
+      const picked = await api.pickDirectory(cwd.trim() || undefined);
+      if (picked) {
+        autoApplyDir.current = picked.trim();
+        setCwd(picked);
+      }
+    } catch {
+      // 对话框失败不影响手动输入，静默即可
+    }
+  };
+
+  const suggestions = detection?.result.suggestions ?? [];
 
   const idError = useMemo(() => validateAppId(id), [id]);
   const envParsed = useMemo(() => parseEnv(envText), [envText]);
@@ -205,6 +351,52 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
       </div>
 
       <div className="form-grid">
+        <Field
+          label="工作目录"
+          wide
+          hint="选择项目文件夹后会自动识别项目类型，并给出可直接使用的启动命令。留空则继承启动器当前目录。"
+        >
+          <DirectoryInput
+            className="input mono"
+            value={cwd}
+            onChange={(event) => setCwd(event.target.value)}
+            placeholder="例如 E:/repo/app，或点右侧「选择…」"
+            disabled={busy}
+            spellCheck={false}
+            autoComplete="off"
+            onPick={handlePickDirectory}
+            pickDisabled={busy || !isHosted()}
+          />
+        </Field>
+
+        {detection && suggestions.length > 0 ? (
+          <div className="field field-wide detect-panel" role="group" aria-label="识别到的启动命令">
+            <div className="detect-head">
+              <IconSparkle size={14} />
+              <span>
+                识别为 {detection.result.kinds.map(kindLabel).join(" + ")}，点击套用启动命令：
+              </span>
+            </div>
+            <div className="detect-list">
+              {suggestions.map((suggestion) => {
+                const active = matchesSuggestion(suggestion, command, argsText);
+                return (
+                  <button
+                    key={suggestion.source + suggestion.label}
+                    type="button"
+                    className={"btn btn-sm detect-chip" + (active ? " is-active" : "")}
+                    aria-pressed={active}
+                    title={`${suggestion.command} ${suggestion.args.join(" ")}\n来自 ${suggestion.source}`}
+                    onClick={() => applySuggestion(suggestion, detection.result.name)}
+                    disabled={busy}
+                  >
+                    {suggestion.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         <Field label="id" required error={showError(idError)} hint={isNew ? "只允许 A-Z a-z 0-9 _ -，创建后不可修改" : "id 创建后不可修改"}>
           <input
             className="input mono"
@@ -228,24 +420,12 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
           />
         </Field>
 
-        <Field label="启动命令" required error={showError(commandError)}>
+        <Field label="启动命令" required wide error={showError(commandError)}>
           <input
             className="input mono"
             value={command}
             onChange={(event) => setCommand(event.target.value)}
             placeholder="例如 python 或 E:/repo/app/start.bat"
-            disabled={busy}
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </Field>
-
-        <Field label="工作目录">
-          <input
-            className="input mono"
-            value={cwd}
-            onChange={(event) => setCwd(event.target.value)}
-            placeholder="留空则继承启动器当前目录"
             disabled={busy}
             spellCheck={false}
             autoComplete="off"
