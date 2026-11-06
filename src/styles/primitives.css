@@ -956,25 +956,33 @@
 
 /* ---------- Toast ---------- */
 
+/*
+ * 底部居中的小胶囊：不压在顶部的操作按钮上；宽度随内容，不占整条横幅。
+ * 视觉保持黑白：中性底 + 描边，状态只体现在错误图标的颜色上。
+ */
 .toast-stack {
   position: fixed;
-  top: calc(var(--titlebar-height) + var(--space-3));
-  right: var(--space-4);
+  bottom: var(--space-5);
+  left: 50%;
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--space-2);
-  width: min(400px, calc(100vw - var(--space-4) * 2));
+  width: max-content;
+  max-width: min(440px, calc(100vw - var(--space-4) * 2));
+  transform: translateX(-50%);
   pointer-events: none;
 }
 
 .toast-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2-5) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  max-width: 100%;
+  padding: var(--space-1-5) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
   background: var(--surface-elevated);
   box-shadow: var(--shadow-lg);
   color: var(--text-primary);
@@ -984,36 +992,26 @@
   animation: toast-in var(--duration-base) var(--ease-out);
 }
 
-/* 退场：向右滑出并淡出，方向与进场一致（从哪来回哪去） */
+/* 退场：向下淡出，方向与进场一致（从哪来回哪去） */
 .toast-item[data-state="leaving"] {
   pointer-events: none;
   animation: toast-out var(--duration-fast) var(--ease-in) forwards;
 }
 
-.toast-item .icon {
-  margin-top: 1px;
+.toast-tone-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
 }
 
 .toast-message {
-  flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.toast-error {
-  border-color: var(--danger-border);
-}
-
 .toast-error .toast-tone-icon {
   color: var(--danger);
-}
-
-.toast-success {
-  border-color: var(--success-border);
-}
-
-.toast-success .toast-tone-icon {
-  color: var(--success);
 }
 
 .toast-close {
@@ -1022,7 +1020,7 @@
   place-items: center;
   width: 20px;
   height: 20px;
-  margin: -2px -4px -2px 0;
+  margin: -2px -6px -2px 0;
   border-radius: var(--radius-xs);
   color: var(--text-muted);
   cursor: pointer;
@@ -1038,14 +1036,14 @@
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateX(var(--space-3));
+    transform: translateY(var(--motion-distance-md));
   }
 }
 
 @keyframes toast-out {
   to {
     opacity: 0;
-    transform: translateX(var(--space-4));
+    transform: translateY(var(--motion-distance-md));
   }
 }
 
@@ -1198,9 +1196,8 @@
   }
 
   .toast-stack {
-    left: var(--space-3);
-    right: var(--space-3);
-    width: auto;
+    bottom: var(--space-3);
+    max-width: calc(100vw - var(--space-3) * 2);
   }
 
   .modal {
