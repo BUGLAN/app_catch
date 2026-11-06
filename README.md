@@ -21,7 +21,7 @@
 | `src/` | 前端（React + TypeScript + Vite），纯 CSS，无 UI 库。 |
 | `docs/` | 配置、会话格式、运行时、界面、图标五份规范文档。 |
 | `scripts/` | 会话目录复原、CDP 驱动安装版 GUI、应用图标生成、发布清单合并、dev 启动器。 |
-| `.github/workflows/` | `ci.yml`（构建校验）与 `release.yml`（tag 触发打包发布）。 |
+| `.github/workflows/` | `ci.yml`（lint / 测试 + clippy / main 与 PR 上打包）与 `release.yml`（tag 触发打包发布）。 |
 | `Cargo.toml` | cargo workspace 根，公共依赖在 `[workspace.dependencies]`。 |
 
 ## 环境要求
@@ -38,7 +38,10 @@ pnpm tauri dev        # Vite(15173) + Tauri 开发窗口
 pnpm dev              # 仅启动 Vite，浏览器里预览界面
 pnpm build            # tsc 类型检查 + vite build 到 dist/
 pnpm test             # 前端纯逻辑单测
+pnpm lint             # ESLint（含 React Hooks 规则）
 cargo test --workspace  # Rust 单元测试与集成测试
+cargo clippy --workspace --all-targets -- -D warnings  # Rust 静态检查（CI 同款）
+cargo fmt --all       # Rust 格式化（CI 用 --check 校验）
 pnpm tauri build      # 打包安装包
 ```
 
@@ -69,7 +72,7 @@ pnpm tauri build
 | [docs/CONFIG.md](docs/CONFIG.md) | 应用配置 TOML：字段、默认值、存储位置、错误语义 |
 | [docs/SESSION_FORMAT.md](docs/SESSION_FORMAT.md) | 会话 JSONL：五类事件字段、编码策略、轮转分片、overflow 与 recover |
 | [docs/RUNTIME.md](docs/RUNTIME.md) | 运行时：生命周期状态机、`SessionManager` API、退出分类、各平台进程后端 |
-| [docs/GUI.md](docs/GUI.md) | 界面结构、命令层 API、轮询策略、分片读取 |
+| [docs/GUI.md](docs/GUI.md) | 界面结构、命令层 API、推送与兜底轮询、分片读取 |
 | [docs/ICONS.md](docs/ICONS.md) | 图标优先级链、PNG 规范、缓存失效、兜底语义 |
 
 ## 测试

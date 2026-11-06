@@ -1,6 +1,9 @@
 name: CI
 
-# 普通 push / PR 的构建校验：前端测试 + Rust 测试 + 完整打包。
+# 普通 push / PR 的校验，分三段：
+# - lint：格式与静态检查（rustfmt / ESLint / tsc），单机跑，最快给出反馈；
+# - test：每个操作系统跑一遍 clippy + 前端测试 + Rust 测试（平台相关代码只能在对应系统上编译）；
+# - bundle：完整打包，只在 main 与 PR 上跑——它最慢，功能分支的日常 push 不需要。
 # 发布流程（建 Release、上传安装包与 latest.json）只在 tag 触发的
 # release.yml 里执行，两个文件刻意分开避免发布步骤误跑到日常分支上。
 on:
@@ -18,8 +21,38 @@ defaults:
     shell: bash
 
 jobs:
-  build:
-    name: ${{ matrix.target }}
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm 版本读 package.json 的 packageManager 字段，与本机一致
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: Rust 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: ESLint（含 React Hooks 规则）
+        run: pnpm lint
+
+      - name: TypeScript 类型检查
+        run: pnpm exec tsc --noEmit
+
+  test:
+    name: test (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -37,7 +70,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # pnpm 版本读 package.json 的 packageManager 字段，与本机一致
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端测试（含版本号 / 更新端点契约）
+        run: pnpm test
+
+      # 警告即失败：平台相关代码（Win32 / AppKit）只在对应系统上编译，必须各跑一遍
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Rust 测试
+        run: cargo test --workspace --locked
+
+  bundle:
+    name: bundle (${{ matrix.target }})
+    needs: [lint, test]
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-15-intel
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -53,12 +127,6 @@ jobs:
 
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
-
-      - name: 前端测试（含版本号 / 更新端点契约）
-        run: pnpm test
-
-      - name: Rust 测试
-        run: cargo test --workspace --locked
 
       # 完整打包一遍，确保打包流程随时可用。
       # 更新签名件（.sig）需要私钥，日常校验没有也不该有：

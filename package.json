@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "node scripts/dev-server.mjs",
     "build": "tsc && vite build",
+    "lint": "eslint . --max-warnings 0",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -21,11 +22,16 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.1.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.14.0",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.72.1",
     "vite": "^6.0.3",
     "vitest": "^5.0.5"
   }
