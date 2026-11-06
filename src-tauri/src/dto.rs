@@ -16,9 +16,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use launcher_core::config::{AppConfig, AppHooks, AppId};
-use launcher_core::runtime::{
-    CaptureConfig, ExitInfo, LogWriterConfig, SessionSnapshot, StatusSnapshot,
-};
+use launcher_core::runtime::{ExitInfo, SessionSnapshot, StatusSnapshot};
 use launcher_core::session::{ExitReason, RunState};
 
 use crate::error::CommandError;
@@ -90,65 +88,6 @@ impl From<StatusSnapshot> for StatusDto {
             ports: snapshot.ports,
         }
     }
-}
-
-/// 日志写入配置。
-///
-/// 同时实现 `Serialize`（`get_capture_config` 的返回值）与 `Deserialize`
-/// （`set_capture_config` 的入参）：读写用同一个形状，前端不必维护两份类型。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WriterConfigDto {
-    /// 单分片字节上限。
-    pub max_file_bytes: u64,
-    /// 保留的历史分片数。
-    pub max_shards: usize,
-    /// 每多少行 flush 一次。
-    pub flush_every: usize,
-    /// 最长多久 flush 一次（毫秒）。
-    pub flush_interval_ms: u64,
-}
-
-impl From<LogWriterConfig> for WriterConfigDto {
-    fn from(config: LogWriterConfig) -> Self {
-        Self {
-            max_file_bytes: config.max_file_bytes,
-            max_shards: config.max_shards,
-            flush_every: config.flush_every,
-            flush_interval_ms: duration_ms(config.flush_interval),
-        }
-    }
-}
-
-/// 捕获配置（`get_capture_config` 返回、`set_capture_config` 接收）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CaptureConfigDto {
-    /// 有界 channel 容量（行）。
-    pub channel_capacity: usize,
-    /// 单行最大字节数。
-    pub max_line_bytes: usize,
-    /// 状态采集间隔（毫秒）；`null` 表示禁用状态采集。
-    pub status_interval_ms: Option<u64>,
-    /// 每分钟最多写多少条 status 事件；`null` 表示不限。
-    pub max_status_events: Option<u32>,
-    /// 日志写入配置。
-    pub writer: WriterConfigDto,
-}
-
-impl From<CaptureConfig> for CaptureConfigDto {
-    fn from(config: CaptureConfig) -> Self {
-        Self {
-            channel_capacity: config.channel_capacity,
-            max_line_bytes: config.max_line_bytes,
-            status_interval_ms: config.status_interval.map(duration_ms),
-            max_status_events: config.max_status_events,
-            writer: WriterConfigDto::from(config.writer),
-        }
-    }
-}
-
-/// `Duration` -> 毫秒，饱和转换（`as_millis` 返回 u128，超过 u64 时取 u64::MAX）。
-fn duration_ms(duration: std::time::Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// 启动时的一次性报告：运行根目录 + 重启前残留的会话 + 恢复失败原因。
@@ -314,7 +253,11 @@ mod tests {
             id: "demo-app".to_string(),
             name: "演示应用".to_string(),
             command: "python".to_string(),
-            args: vec!["main.py".to_string(), "--port".to_string(), "8000".to_string()],
+            args: vec![
+                "main.py".to_string(),
+                "--port".to_string(),
+                "8000".to_string(),
+            ],
             cwd: Some("E:/repo/demo".to_string()),
             env: BTreeMap::from([("PYTHONUNBUFFERED".to_string(), "1".to_string())]),
             icon: Some("E:/repo/demo/icon.png".to_string()),
@@ -390,15 +333,14 @@ mod tests {
             "   ".to_string(),
             "--port".to_string(),
         ];
-        input.tags = vec![
-            " python ".to_string(),
-            "python".to_string(),
-            "".to_string(),
-        ];
+        input.tags = vec![" python ".to_string(), "python".to_string(), "".to_string()];
         let config = input.into_config().expect("应转换成功");
         assert_eq!(config.name, "演示");
         assert_eq!(config.command, "python");
-        assert_eq!(config.args, vec!["main.py".to_string(), "--port".to_string()]);
+        assert_eq!(
+            config.args,
+            vec!["main.py".to_string(), "--port".to_string()]
+        );
         assert_eq!(config.tags, vec!["python".to_string()], "标签应去重");
     }
 
@@ -465,25 +407,5 @@ mod tests {
         assert_eq!(dto.reason, ExitReason::Crashed);
         let json = serde_json::to_string(&dto).expect("序列化失败");
         assert_eq!(json, "{\"code\":3,\"reason\":\"crashed\"}");
-    }
-
-    #[test]
-    fn capture_config_dto_reports_durations_in_millis() {
-        let config = CaptureConfig::default();
-        let dto = CaptureConfigDto::from(config);
-        // 与 launcher-core 的 CaptureConfig::default() 保持一致（3s 采集一次）
-        assert_eq!(dto.status_interval_ms, Some(3000), "默认状态采集间隔应为 3s");
-        assert_eq!(dto.writer.max_shards, 5);
-        assert_eq!(dto.writer.flush_interval_ms, 100);
-    }
-
-    #[test]
-    fn disabled_status_interval_serializes_as_null() {
-        let mut config = CaptureConfig::default();
-        config.status_interval = None;
-        let dto = CaptureConfigDto::from(config);
-        assert_eq!(dto.status_interval_ms, None);
-        let json = serde_json::to_string(&dto).expect("序列化失败");
-        assert!(json.contains("\"status_interval_ms\":null"), "{json}");
     }
 }

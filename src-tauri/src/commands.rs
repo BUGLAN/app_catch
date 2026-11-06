@@ -6,20 +6,21 @@
 //! - 所有命令返回 Result<T, CommandError>，前端拿到的永远是 { kind, message }。
 //!
 //! 命令清单一览见 docs/GUI.md「命令层 API」。
-
-use std::sync::Arc;
+//!
+//! **线程约定**：Tauri 2 里不带 `async` 的命令跑在**主线程**上（macOS 上就是 AppKit 事件循环），
+//! 在里面读写磁盘会让拖动、缩放窗口卡顿。因此：
+//! - 碰磁盘的同步命令一律标 `#[tauri::command(async)]`，挪到异步运行时上执行；
+//! - 可能读很多数据的（`read_session_events`）再进一步放进 `spawn_blocking`，不占 tokio worker；
+//! - 只有纯内存计算的小命令（版本号、内置默认图标）保持同步。
 
 use tauri::State;
 
 use launcher_core::config::AppConfig;
 use launcher_core::platform::IconCapture;
-use launcher_core::runtime::{CaptureConfig, SessionManager};
 use launcher_core::session::SessionId;
 
 use crate::app_state::{parse_app_id, AppState};
-use crate::dto::{
-    AppConfigInput, BootReport, CaptureConfigDto, SessionSnapshotDto, WriterConfigDto,
-};
+use crate::dto::{AppConfigInput, BootReport, SessionSnapshotDto};
 use crate::error::CommandError;
 use crate::events_reader::{SessionEventsPage, DEFAULT_PAGE_LINES};
 
@@ -28,7 +29,10 @@ pub fn parse_session_id(raw: &str) -> Result<SessionId, CommandError> {
     raw.trim().parse::<SessionId>().map_err(|e| {
         CommandError::new(
             "invalid_id",
-            format!("会话 id 不合法（应为 uuid）：{}", trim_reason(&e.to_string())),
+            format!(
+                "会话 id 不合法（应为 uuid）：{}",
+                trim_reason(&e.to_string())
+            ),
         )
     })
 }
@@ -41,32 +45,24 @@ fn trim_reason(raw: &str) -> String {
     }
 }
 
-/// 取当前管理器与捕获配置。
-///
-/// 单独抽出来是为了让每个命令都拿到**同一时刻**的一致视图，
-/// 且不会把 RwLock 的读锁持有到 await 之后。
-fn current(state: &AppState) -> (Arc<SessionManager>, CaptureConfig) {
-    (state.manager(), state.capture_config())
-}
-
 // ---------------------------------------------------------------------------
 // 应用配置
 // ---------------------------------------------------------------------------
 
 /// 列出全部应用（按 id 升序）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_apps(state: State<'_, AppState>) -> Result<Vec<AppConfig>, CommandError> {
     state.store().list().map_err(CommandError::from)
 }
 
 /// 读取单个应用配置。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_app(state: State<'_, AppState>, id: String) -> Result<AppConfig, CommandError> {
     state.get_app(&id)
 }
 
 /// 新建应用配置。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_app(
     state: State<'_, AppState>,
     config: AppConfigInput,
@@ -78,7 +74,7 @@ pub fn create_app(
 }
 
 /// 覆盖已有应用配置。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_app(
     state: State<'_, AppState>,
     config: AppConfigInput,
@@ -90,7 +86,7 @@ pub fn update_app(
 /// 删除应用配置。
 ///
 /// 只删配置，**不碰**已有会话目录：历史日志属于审计材料，删配置不该连带抹掉。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_app(state: State<'_, AppState>, id: String) -> Result<(), CommandError> {
     let app_id = parse_app_id(&id)?;
     state.store().delete(&app_id).map_err(CommandError::from)
@@ -107,7 +103,7 @@ pub async fn start_app(
     id: String,
 ) -> Result<SessionSnapshotDto, CommandError> {
     let app = state.get_app(&id)?;
-    let (manager, _) = current(&state);
+    let manager = state.manager();
     let handle = manager.start(&app).await.map_err(CommandError::from)?;
     Ok(SessionSnapshotDto::from(handle.snapshot))
 }
@@ -119,7 +115,7 @@ pub async fn stop_session(
     session_id: String,
 ) -> Result<(), CommandError> {
     let session_id = parse_session_id(&session_id)?;
-    let (manager, _) = current(&state);
+    let manager = state.manager();
     manager.stop(session_id).await.map_err(CommandError::from)
 }
 
@@ -132,7 +128,7 @@ pub async fn restart_session(
 ) -> Result<SessionSnapshotDto, CommandError> {
     let session_id = parse_session_id(&session_id)?;
     let app = state.get_app(&app_id)?;
-    let (manager, _) = current(&state);
+    let manager = state.manager();
     let handle = manager
         .restart(session_id, &app)
         .await
@@ -140,14 +136,31 @@ pub async fn restart_session(
     Ok(SessionSnapshotDto::from(handle.snapshot))
 }
 
-/// 列出仍在运行的会话（按 session_id 升序）。
+/// 列出仍在运行的会话（按启动先后排序）。
 #[tauri::command]
 pub async fn list_active_sessions(
     state: State<'_, AppState>,
 ) -> Result<Vec<SessionSnapshotDto>, CommandError> {
-    let (manager, _) = current(&state);
+    let manager = state.manager();
     Ok(manager
         .list_active()
+        .await
+        .into_iter()
+        .map(SessionSnapshotDto::from)
+        .collect())
+}
+
+/// 列出会话：全部运行中的，加上每个应用最近退出的几个（按启动先后排序）。
+///
+/// 界面用它而不是 `list_active_sessions`：进程退出后会话仍留在列表里，
+/// 用户还能看到退出码与最后的输出——这往往正是最需要看日志的时候。
+#[tauri::command]
+pub async fn list_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<SessionSnapshotDto>, CommandError> {
+    let manager = state.manager();
+    Ok(manager
+        .list_sessions()
         .await
         .into_iter()
         .map(SessionSnapshotDto::from)
@@ -161,7 +174,7 @@ pub async fn get_session_status(
     session_id: String,
 ) -> Result<SessionSnapshotDto, CommandError> {
     let session_id = parse_session_id(&session_id)?;
-    let (manager, _) = current(&state);
+    let manager = state.manager();
     let snapshot = manager
         .status(session_id)
         .await
@@ -176,8 +189,11 @@ pub async fn get_session_status(
 /// 从会话目录按分片顺序增量读取事件。
 ///
 /// 边跑边读安全：末行未写完时不消费它，游标停在它之前（详见 events_reader.rs）。
+///
+/// 读取放在 `spawn_blocking` 里：首次打开一个长跑会话时要扫过若干分片，
+/// 既不能卡住主线程，也不该占住 tokio worker。
 #[tauri::command]
-pub fn read_session_events(
+pub async fn read_session_events(
     state: State<'_, AppState>,
     session_id: String,
     from_line: u64,
@@ -190,57 +206,15 @@ pub fn read_session_events(
     } else {
         max_lines
     };
-    state.reader().read_page(&dir, from_line, limit)
+    let reader = state.reader();
+    tokio::task::spawn_blocking(move || reader.read_page(&dir, from_line, limit))
+        .await
+        .map_err(|e| CommandError::new("internal", format!("读取会话事件的任务失败：{e}")))?
 }
 
 // ---------------------------------------------------------------------------
-// 捕获配置与启动报告
+// 启动报告
 // ---------------------------------------------------------------------------
-
-/// 读取当前捕获配置。
-#[tauri::command]
-pub fn get_capture_config(state: State<'_, AppState>) -> Result<CaptureConfigDto, CommandError> {
-    Ok(CaptureConfigDto::from(state.capture_config()))
-}
-
-/// 写入捕获配置；有会话在跑时拒绝（重建管理器会丢掉会话表）。
-#[tauri::command]
-pub async fn set_capture_config(
-    state: State<'_, AppState>,
-    config: CaptureConfigDto,
-) -> Result<CaptureConfigDto, CommandError> {
-    let (manager, _) = current(&state);
-    let running = manager.list_active().await.len();
-    let mut capture = CaptureConfig::default();
-    capture.channel_capacity = config.channel_capacity;
-    capture.max_line_bytes = config.max_line_bytes;
-    capture.status_interval = config
-        .status_interval_ms
-        .map(std::time::Duration::from_millis);
-    capture.max_status_events = config.max_status_events;
-    capture.writer = writer_config_from(&config.writer);
-    state.replace_capture_config(capture, running)?;
-    Ok(CaptureConfigDto::from(state.capture_config()))
-}
-
-/// 把 DTO 还原成核心的日志写入配置。
-fn writer_config_from(dto: &WriterConfigDto) -> launcher_core::runtime::LogWriterConfig {
-    let mut config = launcher_core::runtime::LogWriterConfig::default();
-    // 0 视为「不覆盖」：界面没有暴露这些字段时不应把默认值抹成 0
-    if dto.max_file_bytes > 0 {
-        config.max_file_bytes = dto.max_file_bytes;
-    }
-    if dto.max_shards > 0 {
-        config.max_shards = dto.max_shards;
-    }
-    if dto.flush_every > 0 {
-        config.flush_every = dto.flush_every;
-    }
-    if dto.flush_interval_ms > 0 {
-        config.flush_interval = std::time::Duration::from_millis(dto.flush_interval_ms);
-    }
-    config
-}
 
 /// 启动期恢复：扫描残留会话并重新关联，返回一次性报告。
 ///
@@ -250,7 +224,7 @@ pub async fn recover_sessions(state: State<'_, AppState>) -> Result<BootReport, 
     let home = launcher_core::paths::app_catch_home()
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let (manager, _) = current(&state);
+    let manager = state.manager();
     match manager.recover_sessions().await {
         Ok(list) => Ok(BootReport {
             home,
@@ -265,7 +239,6 @@ pub async fn recover_sessions(state: State<'_, AppState>) -> Result<BootReport, 
         }),
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // 图标
@@ -310,26 +283,21 @@ pub async fn get_app_icon(
 
     // 图标抓取是纯尽力而为：即使 spawn_blocking 本身失败也只是「没有图标」
     let force = force.unwrap_or(false);
-    let captured = tokio::task::spawn_blocking(move || {
+    let url = tokio::task::spawn_blocking(move || {
         let capture = launcher_core::platform::default_icon_capture();
-        if force {
+        let path = if force {
             capture.recapture(&target)
         } else {
             capture.capture(&target)
-        }
+        }?;
+        // 缓存文件读不出来（例如刚好被清理）：当作没有图标
+        let bytes = std::fs::read(path).ok()?;
+        Some(launcher_core::platform::icon::to_data_url(&bytes))
     })
     .await
     .ok()
     .flatten();
-
-    let Some(path) = captured else {
-        return Ok(None);
-    };
-    let Ok(bytes) = std::fs::read(&path) else {
-        // 缓存文件读不出来（例如刚好被清理）：当作没有图标
-        return Ok(None);
-    };
-    Ok(Some(launcher_core::platform::icon::to_data_url(&bytes)))
+    Ok(url)
 }
 
 /// 内置默认图标的 data URL（前端拿不到应用图标时用它，避免纯色占位块）。
@@ -337,9 +305,7 @@ pub async fn get_app_icon(
 /// 图标本身编译进二进制（\`include_bytes!\`），因此永远可用、不依赖磁盘。
 #[tauri::command]
 pub fn default_icon() -> String {
-    launcher_core::platform::icon::to_data_url(
-        launcher_core::platform::icon::DEFAULT_ICON_PNG,
-    )
+    launcher_core::platform::icon::to_data_url(launcher_core::platform::icon::DEFAULT_ICON_PNG)
 }
 
 /// 返回 launcher-core 的版本号（M0 打通链路用，保留以兼容既有前端）。
@@ -423,43 +389,16 @@ mod tests {
     fn invalid_session_id_reports_chinese_message() {
         let err = parse_session_id("not-a-uuid").expect_err("非法 uuid 应失败");
         assert_eq!(err.kind, "invalid_id");
-        assert!(err.message.contains("会话 id 不合法"), "文案: {}", err.message);
+        assert!(
+            err.message.contains("会话 id 不合法"),
+            "文案: {}",
+            err.message
+        );
         assert!(
             !err.message.contains("InvalidId"),
             "不应把底层调试名透给用户: {}",
             err.message
         );
-    }
-
-    #[test]
-    fn writer_config_from_ignores_zero_fields() {
-        let defaults = launcher_core::runtime::LogWriterConfig::default();
-        let zeroed = WriterConfigDto {
-            max_file_bytes: 0,
-            max_shards: 0,
-            flush_every: 0,
-            flush_interval_ms: 0,
-        };
-        let config = writer_config_from(&zeroed);
-        assert_eq!(config.max_file_bytes, defaults.max_file_bytes, "0 不应覆盖默认值");
-        assert_eq!(config.max_shards, defaults.max_shards);
-        assert_eq!(config.flush_every, defaults.flush_every);
-        assert_eq!(config.flush_interval, defaults.flush_interval);
-    }
-
-    #[test]
-    fn writer_config_from_applies_explicit_values() {
-        let dto = WriterConfigDto {
-            max_file_bytes: 1024,
-            max_shards: 2,
-            flush_every: 8,
-            flush_interval_ms: 50,
-        };
-        let config = writer_config_from(&dto);
-        assert_eq!(config.max_file_bytes, 1024);
-        assert_eq!(config.max_shards, 2);
-        assert_eq!(config.flush_every, 8);
-        assert_eq!(config.flush_interval, std::time::Duration::from_millis(50));
     }
 
     #[test]
@@ -506,7 +445,8 @@ mod tests {
     #[test]
     fn executable_resolution_used_by_icon_command() {
         // 绝对路径 + 存在 -> 原样返回
-        let exe = launcher_core::platform::icon::resolve_executable("C:/Windows/System32/notepad.exe");
+        let exe =
+            launcher_core::platform::icon::resolve_executable("C:/Windows/System32/notepad.exe");
         if std::path::Path::new("C:/Windows/System32/notepad.exe").is_file() {
             assert!(exe.is_some(), "存在的绝对路径应解析成功");
         }

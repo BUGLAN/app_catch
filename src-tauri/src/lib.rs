@@ -4,11 +4,12 @@
 //!
 //! | 模块 | 职责 |
 //! | --- | --- |
-//! | [`app_state`] | 共享状态：配置仓库、会话管理器、捕获配置、事件读取器 |
+//! | [`app_state`] | 共享状态：配置仓库、会话管理器、事件读取器 |
 //! | [`commands`] | Tauri 命令薄封装，统一返回中文结构化错误 |
 //! | [`dto`] | 命令层数据传输对象与输入校验 |
 //! | [`error`] | `launcher-core` 错误 -> 前端可读的 `{ kind, message }` |
 //! | [`events_reader`] | 会话事件分片合并 + 增量游标 + 边写边读 |
+//! | [`notices`] | 会话变化推送：合并核心通知后发成前端事件，替代高频轮询 |
 //! | [`window`] | 自绘标题栏所需的窗口控制命令 + 最大化状态事件 |
 
 pub mod app_state;
@@ -16,6 +17,7 @@ pub mod commands;
 pub mod dto;
 pub mod error;
 pub mod events_reader;
+pub mod notices;
 pub mod window;
 
 use tauri::Manager;
@@ -37,13 +39,16 @@ pub fn run() {
             // 初始化失败（例如主目录不可用）直接把错误交给 Tauri 报错退出，
             // 而不是带着半初始化状态继续跑——那样界面会全是莫名其妙的错误。
             let state = AppState::bootstrap()?;
+            // 会话变化推送：订阅要在任何会话启动之前挂上，才不会漏掉第一批通知
+            notices::spawn_forwarder(app.handle().clone(), state.manager().subscribe());
             app.manage(state);
             // 自定义标题栏依赖「最大化 / 还原」图标能跟着窗口状态变：挂上监听
             window::attach_maximize_watcher(app.handle());
             // 自动更新只在桌面端启用；endpoints/公钥都在 tauri.conf.json 的
             // plugins.updater 里，前端通过 updater:default 权限调用 check/download/install。
             #[cfg(desktop)]
-            app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -58,10 +63,9 @@ pub fn run() {
             commands::stop_session,
             commands::restart_session,
             commands::list_active_sessions,
+            commands::list_sessions,
             commands::get_session_status,
             commands::read_session_events,
-            commands::get_capture_config,
-            commands::set_capture_config,
             commands::recover_sessions,
             commands::get_app_icon,
             commands::default_icon,
