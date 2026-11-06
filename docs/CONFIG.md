@@ -29,13 +29,14 @@ app_catch 为每个应用保存**一个独立的 TOML 文件**，字段全部使
 | `env` | table<string,string> | ❌ | `{}` | 环境变量**增量**，在父进程环境之上追加/覆盖 |
 | `icon` | string 或省略 | ❌ | 省略 = 走运行时抓取 + 内置兜底图 | 自定义图标路径 |
 | `tags` | string[] | ❌ | `[]` | 标签，供 GUI 分组与过滤 |
+| `launch_mode` | `"direct"` / `"open"` | ❌ | `"direct"` | 启动方式，详见下文「启动 .app 应用」；`open` 仅 macOS 生效 |
 | `hooks.before` | string[] | ❌ | `[]` | 启动前 hook：每项一条 shell 命令，详见下文「启动 hook」 |
 | `hooks.after` | string[] | ❌ | `[]` | 启动后 hook：每项一条 shell 命令 |
 | `hooks.timeout_secs` | integer | ❌ | `600` | 单条 hook 命令的超时（秒），超时视为失败并杀掉其进程树 |
 
 补充约定：
 
-- **空值不落盘**：`args` / `cwd` / `env` / `icon` / `tags` / `hooks` 为空时不会写入文件，
+- **空值不落盘**：`args` / `cwd` / `env` / `icon` / `tags` / `hooks` 为空、`launch_mode` 为缺省的 `direct` 时不会写入文件，
   保持配置文件干净；读取时这些字段自动取默认值（向后兼容旧配置）。
 - `env` 使用 `BTreeMap`，键按字典序输出，保证同样的配置产生同样的字节序列（便于 diff）。
 - 路径使用正斜杠或反斜杠均可，Windows 下建议写成 `E:/repo/demo`（TOML 中反斜杠需转义）。
@@ -107,6 +108,34 @@ timeout_secs = 300
 - 停止会话不会终止仍在运行的 after hook，它只受 `timeout_secs` 约束；
 - Windows 下 Rust 会按 MSVC 规则给含空格的参数加引号，命令里若再写双引号，`cmd` 可能解析异常，
   复杂命令建议写成脚本文件再调用。
+
+## 启动 .app 应用（macOS）
+
+`command` 可以直接写 `.app` 包的路径，不必写到 `Contents/MacOS/` 里的可执行文件。
+`launch_mode` 决定怎么启动它：
+
+| `launch_mode` | 行为 | 输出捕获 | 隐私权限（麦克风等）记在 | 应用已在运行时 |
+| --- | --- | --- | --- | --- |
+| `direct`（缺省） | 读 `Info.plist` 的 `CFBundleExecutable`，spawn `Contents/MacOS/<可执行文件>` | ✅ | app_catch | 新进程通常把请求转交已有实例后立刻退出，日志里会提示 |
+| `open` | 交给 LaunchServices 打开（`/usr/bin/open`），等同点击 Dock 图标 | ❌ | 应用自己 | 只切到前台，会话跟踪这个已有进程 |
+
+`open` 模式的细节：
+
+- 适合把已安装的应用当成快捷启动项：权限、单实例行为、Dock 图标都与平时一致；
+- `args` 经 `open --args` 传给应用（应用已在运行时不生效），`env` 经 `open --env` 传入，`cwd` 不使用；
+- 打开后按可执行文件路径找到应用主进程（15 秒内找不到算启动失败），之后按 pid + 启动时间跟踪；
+- 停止会话 = 对应用发 SIGTERM（宽限 5 秒后 SIGKILL），与直接启动相同；
+- 拿不到退出码：用户自己退出应用记为正常退出（`normal`），而不是崩溃；
+- 非 macOS 平台上 `open` 按 `direct` 处理。
+
+```toml
+id = "wechat"
+name = "微信"
+command = "/Applications/WeChat.app"
+launch_mode = "open"
+```
+
+界面上新建应用时点「选择应用程序」选中 `.app`，会自动填好命令、名称与 id，并默认选「像 Dock 一样打开」。
 
 ## 最小示例（只有必填字段）
 

@@ -107,6 +107,17 @@ pub fn classify_exit(stop_requested: bool, code: Option<i32>) -> ExitReason {
 2. **`code == None` 归为 `crashed`**：拿不到退出码意味着非正常终止；
 3. **标记先于杀进程**：`stop()` 先置 `stop_requested = true` 再调用 `kill_tree`，保证收尾任务判定时一定能看到该标记。
 
+例外：`launch_mode = "open"`（交给系统打开）的会话改用 `classify_opened_exit`。这类进程不是 app_catch 的子进程，
+退出码永远拿不到，而用户 ⌘Q 退出是最常见的结束方式，所以「未主动停止且拿不到码」记为 `normal`。
+
+### 启动后的说明行与「秒退」提示
+
+后端可以在 `SpawnedProcess::notes` 里带几行说明，会话管理器把它们以 `[app_catch] ` 前缀的 `output` 事件写在 `start` 之后，
+例如「已交给系统打开…不捕获输出」「应用启动前已在运行…」。
+
+直接运行 `.app` 的会话若在 3 秒内以 0 退出（`QUICK_EXIT_WINDOW`），会在 `exit` 之前补一行提示：
+单实例应用常见「新进程把启动请求转交给已有实例后立刻退出」，提示用户先退出已有实例，或改用「像 Dock 一样打开」。
+
 ## SessionManager API 一览
 
 全部为 `async`（除构造与纯查询）：
@@ -347,7 +358,11 @@ OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
    - 进程身份：macOS 取 `proc_pidinfo` 的启动时间（微秒），Linux 取 `/proc/<pid>/stat` 的 starttime；
    - 启动器重启后重关联的进程不是本进程的子进程，`wait` 只能轮询到它消失，退出码记为未知；
    - 从 Finder 启动的 .app 只有系统默认 PATH：后端构造时在后台线程读取一次用户登录 shell 的 PATH（`$SHELL -ilc`，5 秒超时），合并进子进程环境，配置里显式写 PATH 时以配置为准；
-   - 端到端覆盖见 `crates/launcher-core/tests/demo_app_lifecycle.rs`（自带小应用 `tests/fixtures/demo_app.sh`：组内 worker + 脱组孙进程 + stdout/stderr 输出）。
+   - 端到端覆盖见 `crates/launcher-core/tests/demo_app_lifecycle.rs`（自带小应用 `tests/fixtures/demo_app.sh`：组内 worker + 脱组孙进程 + stdout/stderr 输出）；
+   - macOS 的 `.app`：直接启动时把包解析成 `Contents/MacOS/<CFBundleExecutable>`；`launch_mode = "open"` 时交给 `/usr/bin/open`，
+     再用 `ps -A -o pid=,comm=` 按可执行文件路径（含符号链接解析后的真实路径）找主进程，之后与重关联的进程走同一条「非子进程」路径：
+     `wait` 轮询到消失，`kill_tree` 额外单独给根进程补发信号（它未必是进程组组长）。
+     LaunchServices 的真实往返见 `crates/launcher-core/tests/macos_app_bundle.rs`（需图形会话，默认 `#[ignore]`）。
 
 ## 相关文档
 

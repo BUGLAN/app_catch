@@ -24,16 +24,18 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex, Notify};
 use tokio::task::JoinHandle;
 
-use crate::config::{AppConfig, AppId};
+use crate::config::{AppConfig, AppId, LaunchMode};
 use crate::error::{AppCatchError, Result};
 use crate::paths;
-use crate::platform::{ProcessBackend, ProcessHandle, ProcessStartTime, SpawnRequest};
+use crate::platform::{
+    effective_launch_mode, ProcessBackend, ProcessHandle, ProcessStartTime, SpawnRequest,
+};
 use crate::runtime::capture::{AppendNotify, CaptureConfig, CapturePipeline, CaptureSink};
 use crate::runtime::hooks;
 use crate::runtime::log_writer::LogWriter;
 use crate::runtime::notice::{SessionNotice, NOTICE_CAPACITY};
 use crate::runtime::status::{default_status_probe, ProbeContext, StatusProbe, StatusSnapshot};
-use crate::session::{now_rfc3339, ExitReason, RunState, SessionEvent, SessionId};
+use crate::session::{now_rfc3339, ExitReason, RunState, SessionEvent, SessionId, StreamKind};
 
 /// [`SessionManager::list_sessions`] 里每个应用最多带几条已退出的会话。
 ///
@@ -311,6 +313,11 @@ impl SessionManager {
         if !app.cwd.as_os_str().is_empty() {
             request.cwd = Some(app.cwd.clone());
         }
+        request.launch_mode = effective_launch_mode(app.launch_mode);
+        let launch_mode = request.launch_mode;
+        // 「直接运行一个 .app 却秒退」的提示只对 .app 有意义，见 quick_exit_hint
+        let direct_bundle =
+            launch_mode == LaunchMode::Direct && looks_like_app_bundle(&app.command);
 
         let spawned = match self.backend.spawn(&request).await {
             Ok(spawned) => spawned,
@@ -325,6 +332,7 @@ impl SessionManager {
             }
         };
 
+        let spawned_at = Instant::now();
         let started_at = now_rfc3339();
         let cwd = request
             .cwd
@@ -342,6 +350,15 @@ impl SessionManager {
             spawned.handle.start_time.as_raw(),
         );
         writer.write_event(&start_event).await?;
+        // 后端的说明（如「已交给系统打开、不捕获输出」）紧跟 start，用户打开日志第一眼就能看到
+        for note in &spawned.notes {
+            writer
+                .write_event(&SessionEvent::output(
+                    StreamKind::Stdout,
+                    format!("{APP_CATCH_NOTE_PREFIX}{note}"),
+                ))
+                .await?;
+        }
         // before hook 的输出紧跟 start 补写（start 必须是首行，见 docs/SESSION_FORMAT.md）
         for event in &before_output {
             writer.write_event(event).await?;
@@ -450,7 +467,23 @@ impl SessionManager {
                 }
             }
 
-            let reason = classify_exit(stop_requested, code);
+            let reason = if launch_mode == LaunchMode::Open {
+                classify_opened_exit(stop_requested, code)
+            } else {
+                classify_exit(stop_requested, code)
+            };
+
+            if direct_bundle && !stop_requested {
+                if let Some(hint) = quick_exit_hint(code, spawned_at.elapsed()) {
+                    let _ = pipeline
+                        .sink()
+                        .write(SessionEvent::output(
+                            StreamKind::Stdout,
+                            format!("{APP_CATCH_NOTE_PREFIX}{hint}"),
+                        ))
+                        .await;
+                }
+            }
 
             // 收尾管线：读完剩余输出 -> overflow 补记 -> 写 exit -> flush+close。
             // 这是会话日志唯一的收尾入口，exit 必然落在末尾。
@@ -1137,10 +1170,78 @@ pub fn classify_exit(stop_requested: bool, code: Option<i32>) -> ExitReason {
     }
 }
 
+/// 交给系统打开（`launch_mode = "open"`）的会话的退出归类。
+///
+/// 这类进程不是 app_catch 的子进程，退出码拿不到（`None`），用户 ⌘Q 退出是最常见的结束方式：
+/// 按 [`classify_exit`] 会一律记成 crashed，所以「拿不到码」在这里按正常退出处理。
+pub fn classify_opened_exit(stop_requested: bool, code: Option<i32>) -> ExitReason {
+    match code {
+        None if !stop_requested => ExitReason::Normal,
+        _ => classify_exit(stop_requested, code),
+    }
+}
+
+/// app_catch 自己写进会话日志的说明行前缀。
+pub const APP_CATCH_NOTE_PREFIX: &str = "[app_catch] ";
+
+/// 「启动后很快以 0 退出」判定为可能交给了已有实例的时间窗口。
+pub const QUICK_EXIT_WINDOW: Duration = Duration::from_secs(3);
+
+/// 直接运行 `.app` 后很快以 0 退出时的提示（纯函数）。
+///
+/// 典型原因是单实例应用：已有实例在运行时，新进程把启动请求转交给它后立刻退出。
+pub fn quick_exit_hint(code: Option<i32>, elapsed: Duration) -> Option<String> {
+    (code == Some(0) && elapsed < QUICK_EXIT_WINDOW).then(|| {
+        format!(
+            "进程启动后 {:.1} 秒就正常退出了：如果这个应用已经在运行，启动请求可能被转交给了已有实例。\
+             可以先退出已有实例再启动，或把启动方式改为「像 Dock 一样打开」",
+            elapsed.as_secs_f64()
+        )
+    })
+}
+
+/// 启动命令是否指向一个 `.app` 包（包本身或包里的可执行文件）。
+fn looks_like_app_bundle(command: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::bundle::enclosing_bundle(Path::new(command.trim())).is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = command;
+        false
+    }
+}
+
 /// 退出原因对应的运行状态。
 pub fn state_for_reason(reason: ExitReason) -> RunState {
     match reason {
         ExitReason::Crashed => RunState::Crashed,
         ExitReason::Normal | ExitReason::Killed => RunState::Exited,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opened_apps_without_exit_code_count_as_normal() {
+        // 系统打开的应用拿不到退出码：用户 ⌘Q 不能被记成崩溃
+        assert_eq!(classify_opened_exit(false, None), ExitReason::Normal);
+        assert_eq!(classify_opened_exit(true, None), ExitReason::Killed);
+        assert_eq!(classify_opened_exit(false, Some(3)), ExitReason::Crashed);
+        // 直接启动的语义保持不变：被信号杀死、拿不到码仍是 crashed
+        assert_eq!(classify_exit(false, None), ExitReason::Crashed);
+    }
+
+    #[test]
+    fn quick_exit_hint_only_for_fast_clean_exit() {
+        let hint = quick_exit_hint(Some(0), Duration::from_millis(400)).expect("应提示");
+        assert!(hint.contains("0.4 秒"), "实际: {hint}");
+        assert!(hint.contains("像 Dock 一样打开"), "实际: {hint}");
+        assert_eq!(quick_exit_hint(Some(1), Duration::from_millis(400)), None);
+        assert_eq!(quick_exit_hint(None, Duration::from_millis(400)), None);
+        assert_eq!(quick_exit_hint(Some(0), QUICK_EXIT_WINDOW), None);
     }
 }

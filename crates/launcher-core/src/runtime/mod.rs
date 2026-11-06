@@ -24,8 +24,9 @@ pub use capture::{AppendNotify, CaptureConfig, CapturePipeline, CaptureSummary};
 pub use log_writer::{shard_file_name, LogWriter, LogWriterConfig};
 pub use notice::{SessionNotice, NOTICE_CAPACITY};
 pub use session_manager::{
-    classify_exit, render_command, state_for_reason, ExitInfo, SessionHandle, SessionManager,
-    SessionSnapshot, RECENT_EXITED_PER_APP,
+    classify_exit, classify_opened_exit, quick_exit_hint, render_command, state_for_reason,
+    ExitInfo, SessionHandle, SessionManager, SessionSnapshot, APP_CATCH_NOTE_PREFIX,
+    QUICK_EXIT_WINDOW, RECENT_EXITED_PER_APP,
 };
 pub use status::{
     default_status_probe, CompositeProbe, EmptyProbe, ProbeContext, StatusProbe, StatusSnapshot,

@@ -15,6 +15,10 @@ app_catch： app_catch.app → 目标进程           → 责任进程 = app_cat
 所以从 app_catch 启动的命令、脚本、开发态程序请求麦克风时，系统弹出的是
 「app_catch 想访问麦克风」，授权也记在 app_catch 名下。这与从终端启动时记在 Terminal 名下是同一个道理。
 
+例外是把应用设为「像 Dock 一样打开」（`launch_mode = "open"`，见 [CONFIG.md](CONFIG.md#启动-app-应用macos)）：
+应用交给系统打开、由 launchd 拉起，它自己就是责任进程，权限与从 Dock 打开完全一致，已有的授权直接可用。
+把已安装的应用当成快捷启动项时用这种方式。
+
 结论：
 
 - **授权一次，全部共享**：给 app_catch 开了麦克风后，所有经它启动的程序都能直接使用，不会逐个询问；

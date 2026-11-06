@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use launcher_core::config::{AppConfig, AppHooks, AppId};
+use launcher_core::config::{AppConfig, AppHooks, AppId, LaunchMode};
 use launcher_core::runtime::{ExitInfo, SessionSnapshot, StatusSnapshot};
 use launcher_core::session::{ExitReason, RunState};
 
@@ -134,6 +134,9 @@ pub struct AppConfigInput {
     /// 启动 hook；缺省表示没有 hook。
     #[serde(default)]
     pub hooks: HooksInput,
+    /// 启动方式；缺省为直接启动。
+    #[serde(default)]
+    pub launch_mode: LaunchMode,
 }
 
 /// 启动 hook 的输入：每项一条 shell 命令，空行丢弃。
@@ -239,6 +242,7 @@ impl AppConfigInput {
             icon,
             tags,
             hooks,
+            launch_mode: self.launch_mode,
         })
     }
 }
@@ -267,7 +271,29 @@ mod tests {
                 after: Vec::new(),
                 timeout_secs: None,
             },
+            launch_mode: LaunchMode::Direct,
         }
+    }
+
+    #[test]
+    fn launch_mode_is_passed_through_and_defaults_to_direct() {
+        let config = valid_input().into_config().expect("合法输入");
+        assert_eq!(config.launch_mode, LaunchMode::Direct);
+
+        let mut input = valid_input();
+        input.launch_mode = LaunchMode::Open;
+        assert_eq!(
+            input.into_config().expect("合法输入").launch_mode,
+            LaunchMode::Open
+        );
+
+        // 前端旧版本不传 launch_mode 时按缺省处理
+        let raw = r#"{"id":"a","name":"A","command":"node"}"#;
+        let input: AppConfigInput = serde_json::from_str(raw).expect("应能反序列化");
+        assert_eq!(input.launch_mode, LaunchMode::Direct);
+        let raw = r#"{"id":"a","name":"A","command":"/Applications/X.app","launch_mode":"open"}"#;
+        let input: AppConfigInput = serde_json::from_str(raw).expect("应能反序列化");
+        assert_eq!(input.launch_mode, LaunchMode::Open);
     }
 
     #[test]

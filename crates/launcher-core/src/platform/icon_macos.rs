@@ -23,6 +23,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::platform::bundle::{enclosing_bundle, plist_string};
 use crate::platform::icon::{
     load_image_file, resolve_and_cache, resolve_and_cache_forced, CapturedIcon, IconSource,
     IconTier, RgbaImage,
@@ -30,44 +31,9 @@ use crate::platform::icon::{
 use crate::platform::project_icon::project_icon;
 use crate::platform::{IconCapture, IconTarget};
 
-/// 路径所在的最外层 `.app` 包（纯函数）。
-///
-/// 取**最外层**：Electron 的渲染进程位于
-/// `Electron.app/Contents/Frameworks/Electron Helper.app/...`，用户看到的图标是外层的。
-fn enclosing_bundle(path: &Path) -> Option<PathBuf> {
-    let mut bundle = PathBuf::new();
-    for component in path.components() {
-        bundle.push(component);
-        let is_app = component
-            .as_os_str()
-            .to_str()
-            .is_some_and(|name| name.len() > 4 && name.to_ascii_lowercase().ends_with(".app"));
-        if is_app {
-            return Some(bundle);
-        }
-    }
-    None
-}
-
 /// 是否是开发态依赖里的包（`node_modules` 下的 Electron / NW.js）。
 fn is_dev_dependency_bundle(bundle: &Path) -> bool {
     bundle.components().any(|c| c.as_os_str() == "node_modules")
-}
-
-/// 用 `plutil` 读 Info.plist 的一个字符串键；读不到返回 `None`。
-fn plist_string(plist: &Path, key: &str) -> Option<String> {
-    let output = Command::new("/usr/bin/plutil")
-        .args(["-extract", key, "raw", "-o", "-"])
-        .arg(plist)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!value.is_empty()).then_some(value)
 }
 
 /// 包的 icns 路径：`CFBundleIconFile`（可省略 `.icns` 后缀），否则退到 Resources 里的第一个 icns。

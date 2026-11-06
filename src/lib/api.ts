@@ -15,6 +15,7 @@ import type { NoticePayload } from "./sessions";
 import type {
   AppConfig,
   AppConfigInput,
+  ApplicationInfo,
   BootReport,
   CommandError,
   ProjectDetection,
@@ -136,6 +137,11 @@ export const api = {
     call<string | null>("pick_directory", { defaultPath: defaultPath ?? null }),
   /** 识别工作目录的项目类型并给出启动候选（只读文件）。 */
   detectProject: (dir: string) => call<ProjectDetection>("detect_project", { dir }),
+  /** 弹出原生「选择应用程序」对话框（macOS 选 .app，Windows 选 .exe）；用户取消返回 `null`。 */
+  pickApplication: (defaultPath?: string) =>
+    call<string | null>("pick_application", { defaultPath: defaultPath ?? null }),
+  /** 识别选中的应用程序：名称、是否 .app 包（只读文件）。 */
+  inspectApplication: (path: string) => call<ApplicationInfo>("inspect_application", { path }),
 };
 
 /**

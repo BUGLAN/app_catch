@@ -71,6 +71,8 @@ pub fn run() {
             commands::default_icon,
             commands::pick_directory,
             commands::detect_project,
+            commands::pick_application,
+            commands::inspect_application,
             window::window_minimize,
             window::window_maximize,
             window::window_unmaximize,

@@ -3,12 +3,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   APP_ID_PATTERN,
+  effectiveLaunchMode,
+  inferSource,
+  isAppBundlePath,
   kindLabel,
+  LAUNCH_MODE_OPTIONS,
   matchesSuggestion,
   parseArgs,
   parseEnv,
   parseTags,
   suggestAppId,
+  suggestIdForApplication,
   validateAppId,
 } from "../components/AppForm";
 
@@ -115,5 +120,45 @@ describe("项目识别辅助", () => {
     expect(matchesSuggestion(s, " pnpm ", "run\ndev\n")).toBe(true);
     expect(matchesSuggestion(s, "pnpm", "run\nbuild")).toBe(false);
     expect(matchesSuggestion(s, "npm", "run\ndev")).toBe(false);
+  });
+});
+
+describe("选择应用程序 / 启动方式", () => {
+  it("识别 .app 包路径（包本身、包内文件、末尾斜杠、大小写）", () => {
+    expect(isAppBundlePath("/Applications/WeChat.app")).toBe(true);
+    expect(isAppBundlePath("/Applications/WeChat.app/")).toBe(true);
+    expect(isAppBundlePath("/Applications/Foo.APP/Contents/MacOS/foo")).toBe(true);
+    expect(isAppBundlePath("python")).toBe(false);
+    expect(isAppBundlePath("E:/repo/app/start.bat")).toBe(false);
+    expect(isAppBundlePath("/x/.app/y")).toBe(false);
+  });
+
+  it("编辑时按配置推断入口", () => {
+    expect(inferSource({ command: "/Applications/WeChat.app" })).toBe("app");
+    expect(inferSource({ command: "C:/Tools/tool.exe" })).toBe("app");
+    expect(inferSource({ command: "C:/repo/run.bat", cwd: "C:/repo" })).toBe("project");
+    expect(inferSource({ command: "pnpm", cwd: "/repo/web" })).toBe("project");
+  });
+
+  it("只有 .app 才会提交 open，其余一律 direct", () => {
+    expect(effectiveLaunchMode("/Applications/WeChat.app", "open")).toBe("open");
+    expect(effectiveLaunchMode("/Applications/WeChat.app", "direct")).toBe("direct");
+    expect(effectiveLaunchMode("python", "open")).toBe("direct");
+  });
+
+  it("显示名推不出 id 时退回文件名", () => {
+    const base = { is_bundle: true, executable: null };
+    expect(suggestIdForApplication({ ...base, name: "Voice Lab", command: "/Applications/Voice Lab.app" })).toBe(
+      "Voice-Lab"
+    );
+    expect(suggestIdForApplication({ ...base, name: "微信", command: "/Applications/WeChat.app" })).toBe("WeChat");
+    expect(
+      suggestIdForApplication({ is_bundle: false, executable: null, name: "记事本", command: "C:\\Tools\\notepad.exe" })
+    ).toBe("notepad");
+  });
+
+  it("默认启动方式排在第一个：像 Dock 一样打开", () => {
+    expect(LAUNCH_MODE_OPTIONS[0]?.value).toBe("open");
+    expect(LAUNCH_MODE_OPTIONS.map((option) => option.value).sort()).toEqual(["direct", "open"]);
   });
 });

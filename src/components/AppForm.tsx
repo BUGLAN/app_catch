@@ -14,11 +14,26 @@
  *     但「保存」按钮可用性判定保持原逻辑不变；
  *   - 底部错误汇总改成带图标的提示块。
  */
-import { useEffect, useMemo, useRef, useState, type InputHTMLAttributes } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type InputHTMLAttributes,
+  type KeyboardEvent,
+} from "react";
 
-import { api, isHosted } from "../lib/api";
-import type { AppConfig, AppConfigInput, CommandSuggestion, ProjectDetection } from "../lib/types";
-import { IconAlert, IconFolder, IconSparkle } from "./ui/Icons";
+import { api, isHosted, toCommandError } from "../lib/api";
+import type {
+  AppConfig,
+  AppConfigInput,
+  ApplicationInfo,
+  CommandSuggestion,
+  LaunchMode,
+  ProjectDetection,
+} from "../lib/types";
+import { IconAlert, IconApp, IconFolder, IconSparkle } from "./ui/Icons";
 import { Field } from "./ui/Field";
 
 interface Props {
@@ -149,6 +164,131 @@ export function matchesSuggestion(
   );
 }
 
+/** 应用是从哪个入口添加的：项目文件夹，还是现成的应用程序。 */
+export type AppSource = "project" | "app";
+
+/** 路径的最后一段（兼容 / 与 \\，忽略末尾分隔符）。 */
+function lastSegment(path: string): string {
+  const parts = path.trim().replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] ?? "";
+}
+
+/** 启动命令是否指向 macOS 的 .app 包（包本身，或包里的某个文件）。 */
+export function isAppBundlePath(command: string): boolean {
+  return command
+    .trim()
+    .split(/[\\/]/)
+    .some((segment) => segment.length > 4 && segment.toLowerCase().endsWith(".app"));
+}
+
+/** 编辑已有应用时推断它来自哪个入口：.app，或没有工作目录的 .exe/.bat/.cmd 视为应用程序。 */
+export function inferSource(config: Pick<AppConfig, "command" | "cwd">): AppSource {
+  const command = config.command.trim();
+  if (isAppBundlePath(command)) {
+    return "app";
+  }
+  if (/\.(exe|bat|cmd)$/i.test(command) && (config.cwd ?? "").trim().length === 0) {
+    return "app";
+  }
+  return "project";
+}
+
+/** 实际提交的启动方式：只有 .app 才能交给系统打开，其余一律直接运行。 */
+export function effectiveLaunchMode(command: string, mode: LaunchMode): LaunchMode {
+  return isAppBundlePath(command) ? mode : "direct";
+}
+
+/** 从识别结果推 id：显示名推不出（如全中文）时退回文件名（WeChat.app → WeChat）。 */
+export function suggestIdForApplication(info: ApplicationInfo): string {
+  const fromName = suggestAppId(info.name);
+  if (fromName.length > 0) {
+    return fromName;
+  }
+  return suggestAppId(lastSegment(info.command).replace(/\.(app|exe|bat|cmd)$/i, ""));
+}
+
+/** 启动方式的选项与说明（顺序即界面顺序，默认项在前）。 */
+export const LAUNCH_MODE_OPTIONS: ReadonlyArray<{ value: LaunchMode; label: string; hint: string }> = [
+  {
+    value: "open",
+    label: "像 Dock 一样打开",
+    hint: "与从 Dock 打开完全一致：麦克风等隐私权限归应用自己，已在运行时只切到前台。不捕获输出、不使用工作目录，只跟踪运行状态。",
+  },
+  {
+    value: "direct",
+    label: "直接运行",
+    hint: "由 app_catch 运行并捕获 stdout/stderr 日志；隐私权限记在 app_catch 名下。适合自己打包、需要看日志的应用。",
+  },
+];
+
+/**
+ * 启动方式单选：外观复用分段控件，语义是 radiogroup（方向键在选项间移动并选中）。
+ */
+function LaunchModePicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: LaunchMode;
+  onChange: (mode: LaunchMode) => void;
+  disabled: boolean;
+}) {
+  const labelId = useId();
+  const hintId = labelId + "-hint";
+  const current = LAUNCH_MODE_OPTIONS.find((option) => option.value === value) ?? LAUNCH_MODE_OPTIONS[0];
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    const index = LAUNCH_MODE_OPTIONS.findIndex((option) => option.value === value);
+    const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+    const next = LAUNCH_MODE_OPTIONS[(index + step + LAUNCH_MODE_OPTIONS.length) % LAUNCH_MODE_OPTIONS.length];
+    if (next) {
+      onChange(next.value);
+      const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+      buttons[LAUNCH_MODE_OPTIONS.indexOf(next)]?.focus();
+    }
+  };
+
+  return (
+    <div className="field field-wide">
+      <span className="field-label" id={labelId}>
+        启动方式
+      </span>
+      <div
+        className="segmented launch-mode"
+        role="radiogroup"
+        aria-labelledby={labelId}
+        aria-describedby={hintId}
+        onKeyDown={handleKeyDown}
+      >
+        {LAUNCH_MODE_OPTIONS.map((option) => {
+          const active = option.value === value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              tabIndex={active ? 0 : -1}
+              className={"seg" + (active ? " is-active" : "")}
+              onClick={() => onChange(option.value)}
+              disabled={disabled}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+      <span id={hintId} className="field-message">
+        {current?.hint}
+      </span>
+    </div>
+  );
+}
+
 /**
  * 工作目录输入框 + 「选择…」按钮。
  *
@@ -205,6 +345,10 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
   const [hookTimeout, setHookTimeout] = useState(
     initial?.hooks?.timeout_secs != null ? String(initial.hooks.timeout_secs) : ""
   );
+  const [launchMode, setLaunchMode] = useState<LaunchMode>(initial?.launch_mode ?? "direct");
+  /** 当前入口：编辑时按配置推断，新建时用户点了哪个入口就是哪个。 */
+  const [source, setSource] = useState<AppSource | null>(initial ? inferSource(initial) : null);
+  const [pickError, setPickError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
   /** 最近一次识别结果（带上它对应的目录，防止旧请求覆盖新输入）。 */
@@ -273,9 +417,17 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
   }, [detection]);
 
   const handlePickDirectory = async () => {
+    setPickError(null);
     try {
       const picked = await api.pickDirectory(cwd.trim() || undefined);
       if (picked) {
+        // 从「应用程序」切回项目：清掉 .app 命令，让识别出的启动命令能自动套用
+        if (isAppBundlePath(command) || source === "app") {
+          setCommand("");
+          setArgsText("");
+          setLaunchMode("direct");
+        }
+        setSource("project");
         autoApplyDir.current = picked.trim();
         setCwd(picked);
       }
@@ -283,6 +435,39 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
       // 对话框失败不影响手动输入，静默即可
     }
   };
+
+  /** 套用「选择应用程序」的识别结果：换了应用就清掉旧参数与工作目录，名称 / id 只补空的。 */
+  const applyApplication = (info: ApplicationInfo) => {
+    const sameApp = command.trim() === info.command;
+    setSource("app");
+    setCommand(info.command);
+    if (!sameApp) {
+      setArgsText("");
+      setCwd("");
+      // 已安装的 .app 默认像 Dock 一样打开：权限与单实例行为都和平时一致
+      setLaunchMode(info.is_bundle ? "open" : "direct");
+    }
+    setName((prev) => (prev.trim().length > 0 ? prev : info.name));
+    if (isNew) {
+      setId((prev) => (prev.trim().length > 0 ? prev : suggestIdForApplication(info)));
+    }
+  };
+
+  const handlePickApplication = async () => {
+    setPickError(null);
+    try {
+      const current = command.trim();
+      const picked = await api.pickApplication(source === "app" && current ? current : undefined);
+      if (!picked) {
+        return;
+      }
+      applyApplication(await api.inspectApplication(picked));
+    } catch (error) {
+      setPickError(toCommandError(error).message);
+    }
+  };
+
+  const showLaunchMode = isAppBundlePath(command);
 
   const suggestions = detection?.result.suggestions ?? [];
 
@@ -321,6 +506,7 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
         env: envParsed.env,
         icon: icon.trim().length > 0 ? icon.trim() : null,
         tags: parseTags(tagsText),
+        launch_mode: effectiveLaunchMode(command, launchMode),
         hooks: {
           before: parseArgs(beforeText),
           after: parseArgs(afterText),
@@ -351,6 +537,42 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
       </div>
 
       <div className="form-grid">
+        <div className="field field-wide">
+          <div className="source-picker" role="group" aria-label="添加方式">
+            <button
+              type="button"
+              className={"source-card" + (source === "project" ? " is-active" : "")}
+              aria-pressed={source === "project"}
+              onClick={handlePickDirectory}
+              disabled={busy || !isHosted()}
+              title={!isHosted() ? "需要在桌面应用中使用" : undefined}
+            >
+              <IconFolder size={18} />
+              <span className="source-card-text">
+                <span className="source-card-title">选择项目文件夹</span>
+                <span className="source-card-desc">本地开发项目，自动识别 pnpm dev、python main.py 等启动命令</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className={"source-card" + (source === "app" ? " is-active" : "")}
+              aria-pressed={source === "app"}
+              onClick={handlePickApplication}
+              disabled={busy || !isHosted()}
+              title={!isHosted() ? "需要在桌面应用中使用" : undefined}
+            >
+              <IconApp size={18} />
+              <span className="source-card-text">
+                <span className="source-card-title">选择应用程序</span>
+                <span className="source-card-desc">已安装或已打包的应用（.app / .exe），可以像 Dock 一样打开</span>
+              </span>
+            </button>
+          </div>
+          <span className={"field-message" + (pickError ? " is-error" : "")} role={pickError ? "alert" : undefined}>
+            {pickError ?? "也可以不选，直接在下面手动填写。"}
+          </span>
+        </div>
+
         <Field
           label="工作目录"
           wide
@@ -431,6 +653,10 @@ export function AppForm({ initial, busy, onSubmit, onCancel }: Props) {
             autoComplete="off"
           />
         </Field>
+
+        {showLaunchMode ? (
+          <LaunchModePicker value={launchMode} onChange={setLaunchMode} disabled={busy} />
+        ) : null}
 
         <Field
           label="参数（每行一个）"

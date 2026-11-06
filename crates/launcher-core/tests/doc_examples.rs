@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use launcher_core::config::{AppConfig, AppHooks, AppId, AppStore};
+use launcher_core::config::{AppConfig, AppHooks, AppId, AppStore, LaunchMode};
 use launcher_core::session::{
     ExitReason, OutputEncoding, RunState, SessionEvent, SessionId, StreamKind,
     SESSION_EVENT_VERSION,
@@ -48,7 +48,19 @@ fn doc_full_config() -> AppConfig {
             after: Vec::new(),
             timeout_secs: None,
         },
+        launch_mode: LaunchMode::Direct,
     }
+}
+
+/// 文档「启动 .app 应用」小节的示例：像 Dock 一样打开一个已安装的应用。
+fn doc_app_bundle_config() -> AppConfig {
+    let mut app = AppConfig::new(
+        AppId::new("wechat").expect("文档示例 id 应合法"),
+        "微信",
+        "/Applications/WeChat.app",
+    );
+    app.launch_mode = LaunchMode::Open;
+    app
 }
 
 /// 文档中的最小配置示例。
@@ -156,6 +168,12 @@ fn config_doc_examples_match_code_output() {
         doc.contains(minimal.trim_end()),
         "docs/CONFIG.md 的最小示例与实际序列化结果不一致，实际输出为:\n{minimal}"
     );
+
+    let bundle = AppStore::to_toml(&doc_app_bundle_config()).expect("序列化 .app 示例失败");
+    assert!(
+        doc.contains(bundle.trim_end()),
+        "docs/CONFIG.md 的 .app 示例与实际序列化结果不一致，实际输出为:\n{bundle}"
+    );
 }
 
 #[test]
@@ -241,6 +259,7 @@ fn docs_are_linked_from_readme() {
         "docs/GUI.md",
         // M3：图标文档必须从 README 可达，否则用户找不到「为什么我的应用没有图标」
         "docs/ICONS.md",
+        "docs/MACOS_PERMISSIONS.md",
     ] {
         assert!(readme.contains(link), "README.md 应链接 {link}");
     }

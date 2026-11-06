@@ -17,6 +17,11 @@
 //!    交互式 shell 带 oh-my-zsh / conda 时要 ~3 秒，所以后端一构造就在后台线程预热，
 //!    用户第一次点「启动」时通常已经读好了。
 //!
+//! 6. **macOS 的 `.app`**：直接启动时把 `Foo.app` 解析成 `Contents/MacOS/<CFBundleExecutable>` 再 spawn；
+//!    `launch_mode = "open"` 时不 spawn，而是交给 LaunchServices（`/usr/bin/open`）打开，
+//!    应用由 launchd 拉起、是自己的隐私权限责任进程，与点 Dock 图标完全一致。
+//!    之后按可执行文件路径找到它的 pid，当作「非子进程」跟踪（与启动器重启后的重关联同一条路径）。
+//!
 //! 本模块是 crate 里允许 `unsafe` 的模块之一：只用于 `kill` / `killpg` / `proc_pidinfo` 三个 libc 调用。
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,6 +33,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::{AppCatchError, Result};
+#[cfg(target_os = "macos")]
+use crate::platform::bundle;
 use crate::platform::{
     BackendFuture, ExitStatusInfo, ProcessBackend, ProcessHandle, ProcessStartTime, SpawnRequest,
     SpawnedProcess,
@@ -364,10 +371,211 @@ async fn wait_tree_gone(pgid: u32, strays: &[u32], timeout: Duration) -> bool {
     }
 }
 
+/// 直接启动时把 `.app` 包解析成包里真正的可执行文件；其它命令原样返回。
+#[cfg(target_os = "macos")]
+async fn resolve_program(program: &str) -> Result<std::ffi::OsString> {
+    let path = std::path::PathBuf::from(program.trim());
+    if !bundle::is_app_bundle(&path) {
+        return Ok(program.into());
+    }
+    let lookup = path.clone();
+    tokio::task::spawn_blocking(move || bundle::bundle_executable(&lookup))
+        .await
+        .ok()
+        .flatten()
+        .map(std::ffi::OsString::from)
+        .ok_or_else(|| {
+            AppCatchError::Unsupported(format!(
+                "在 {} 里找不到可执行文件：Contents/MacOS 为空，或 Info.plist 的 CFBundleExecutable 指向的文件不存在",
+                path.display()
+            ))
+        })
+}
+
+/// 非 macOS：没有 `.app` 包的概念，命令原样返回。
+#[cfg(not(target_os = "macos"))]
+async fn resolve_program(program: &str) -> Result<std::ffi::OsString> {
+    Ok(program.into())
+}
+
+/// 「像 Dock 一样打开」：交给 LaunchServices，再按可执行文件路径找到应用主进程。
+#[cfg(target_os = "macos")]
+mod open_app {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    use tokio::process::Command;
+
+    use super::read_identity;
+    use crate::error::{AppCatchError, Result};
+    use crate::platform::bundle;
+    use crate::platform::{ProcessHandle, ProcessStartTime, SpawnRequest, SpawnedProcess};
+
+    /// `/usr/bin/open` 本身的超时：它在 LaunchServices 确认拉起后就返回，正常是亚秒级。
+    const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+    /// `open` 返回后等应用主进程出现的上限。
+    const PID_TIMEOUT: Duration = Duration::from_secs(15);
+    /// 找进程的轮询间隔。
+    const PID_POLL: Duration = Duration::from_millis(100);
+
+    /// 解析 `ps -A -o pid=,comm=` 的输出（纯函数）。
+    ///
+    /// macOS 上 `comm` 是完整的可执行路径，可能含空格，所以只按第一个空白切一刀。
+    pub(super) fn parse_pid_comm(text: &str) -> Vec<(u32, String)> {
+        text.lines()
+            .filter_map(|line| {
+                let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
+                Some((pid.parse().ok()?, rest.trim().to_string()))
+            })
+            .collect()
+    }
+
+    /// 当前以 `candidates` 中任一路径为可执行文件运行的进程。
+    async fn running_pids(candidates: &[PathBuf]) -> Vec<u32> {
+        let output = Command::new("/bin/ps")
+            .args(["-A", "-o", "pid=,comm="])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        parse_pid_comm(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .filter(|(_, comm)| candidates.iter().any(|c| Path::new(comm) == c))
+            .map(|(pid, _)| pid)
+            .collect()
+    }
+
+    pub(super) async fn open(request: &SpawnRequest) -> Result<SpawnedProcess> {
+        let target = PathBuf::from(request.program.trim());
+        let bundle_path = bundle::enclosing_bundle(&target)
+            .filter(|bundle| bundle.is_dir())
+            .ok_or_else(|| {
+                AppCatchError::Unsupported(format!(
+                    "「像 Dock 一样打开」只支持 .app 应用，当前启动命令不是 .app：{}",
+                    request.program
+                ))
+            })?;
+        let lookup = bundle_path.clone();
+        let executable = tokio::task::spawn_blocking(move || bundle::bundle_executable(&lookup))
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| {
+                AppCatchError::Unsupported(format!(
+                    "在 {} 里找不到可执行文件，无法跟踪它的进程",
+                    bundle_path.display()
+                ))
+            })?;
+        // ps 报的是 LaunchServices 实际执行的路径：经过符号链接时与配置里的写法不同
+        let mut candidates = vec![executable.clone()];
+        if let Ok(real) = std::fs::canonicalize(&executable) {
+            if real != executable {
+                candidates.push(real);
+            }
+        }
+
+        // 打开前已在运行的实例：open 只会把它切到前台，不会再起新进程
+        let existing: HashSet<u32> = running_pids(&candidates).await.into_iter().collect();
+
+        let mut command = Command::new("/usr/bin/open");
+        for (key, value) in &request.env {
+            command.arg("--env").arg(format!("{key}={value}"));
+        }
+        command.arg(&bundle_path);
+        if !request.args.is_empty() {
+            command.arg("--args").args(&request.args);
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(OPEN_TIMEOUT, command.output())
+            .await
+            .map_err(|_| {
+                AppCatchError::Unsupported(format!(
+                    "系统打开 {} 超过 {} 秒仍未返回",
+                    bundle_path.display(),
+                    OPEN_TIMEOUT.as_secs()
+                ))
+            })?
+            .map_err(|e| AppCatchError::Io {
+                path: PathBuf::from("/usr/bin/open"),
+                source: e,
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let detail = if stderr.is_empty() {
+                format!("open 退出码 {:?}", output.status.code())
+            } else {
+                stderr
+            };
+            return Err(AppCatchError::Unsupported(format!(
+                "系统打开 {} 失败：{detail}",
+                bundle_path.display()
+            )));
+        }
+
+        let deadline = tokio::time::Instant::now() + PID_TIMEOUT;
+        loop {
+            let running = running_pids(&candidates).await;
+            // 新拉起的实例优先；没有新实例而原本就在运行时，跟踪那个被切到前台的已有进程
+            let chosen = running
+                .iter()
+                .copied()
+                .find(|pid| !existing.contains(pid))
+                .or_else(|| running.iter().copied().find(|pid| existing.contains(pid)));
+            if let Some(pid) = chosen {
+                if let Some(identity) = read_identity(pid).filter(|identity| !identity.zombie) {
+                    let mut notes = vec![format!(
+                        "已交给系统打开 {}（等同点击 Dock 图标）：这种启动方式不捕获应用输出，只跟踪进程状态",
+                        bundle_path.display()
+                    )];
+                    if existing.contains(&pid) {
+                        notes.push(
+                            "应用启动前已在运行：系统把它切到了前台，本会话跟踪的是这个已有进程，停止会话会结束它"
+                                .to_string(),
+                        );
+                        if !request.args.is_empty() {
+                            notes.push("应用已在运行，本次的启动参数不会生效".to_string());
+                        }
+                    }
+                    return Ok(SpawnedProcess {
+                        handle: ProcessHandle::new(pid, ProcessStartTime::from_raw(identity.start)),
+                        stdout: None,
+                        stderr: None,
+                        notes,
+                    });
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AppCatchError::Unsupported(format!(
+                    "系统已打开 {}，但 {} 秒内没有找到以 {} 运行的进程",
+                    bundle_path.display(),
+                    PID_TIMEOUT.as_secs(),
+                    executable.display()
+                )));
+            }
+            tokio::time::sleep(PID_POLL).await;
+        }
+    }
+}
+
 impl ProcessBackend for UnixProcessBackend {
     fn spawn<'a>(&'a self, request: &'a SpawnRequest) -> BackendFuture<'a, Result<SpawnedProcess>> {
         Box::pin(async move {
-            let mut command = Command::new(&request.program);
+            #[cfg(target_os = "macos")]
+            if request.launch_mode == crate::config::LaunchMode::Open {
+                return open_app::open(request).await;
+            }
+
+            let program = resolve_program(&request.program).await?;
+            let mut command = Command::new(&program);
             command.args(&request.args);
             command.stdout(std::process::Stdio::piped());
             command.stderr(std::process::Stdio::piped());
@@ -429,6 +637,7 @@ impl ProcessBackend for UnixProcessBackend {
                 handle: ProcessHandle::new(pid, ProcessStartTime::from_raw(start_time)),
                 stdout,
                 stderr,
+                notes: Vec::new(),
             })
         })
     }
@@ -443,7 +652,12 @@ impl ProcessBackend for UnixProcessBackend {
 
             let pgid = handle.pid;
             // 必须在发信号前拍快照：父进程一死，脱组的子孙会被重新挂到 launchd/init 下
-            let strays: Vec<u32> = snapshot_descendants(handle.pid).await;
+            let mut strays: Vec<u32> = snapshot_descendants(handle.pid).await;
+            if !owned {
+                // 不是本进程 spawn 的（系统打开 / 重关联）：根进程未必是进程组组长，
+                // killpg 可能覆盖不到它，单独补发一份
+                strays.push(handle.pid);
+            }
 
             signal_tree(pgid, &strays, libc::SIGTERM);
             if wait_tree_gone(pgid, &strays, TERM_GRACE).await {
@@ -533,6 +747,27 @@ mod tests {
         got.sort_unstable();
         assert_eq!(got, vec![101, 102, 103]);
         assert!(descendants_from(&pairs, 999).is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pid_comm_keeps_paths_with_spaces() {
+        let rows = open_app::parse_pid_comm(
+            "  1566 /Applications/Warp.app/Contents/MacOS/stable\n 3114 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\nbad\n",
+        );
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    1566,
+                    "/Applications/Warp.app/Contents/MacOS/stable".to_string()
+                ),
+                (
+                    3114,
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -138,9 +138,37 @@ pub struct AppConfig {
     /// 标签，便于 GUI 分组过滤。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// 启动方式；缺省 [`LaunchMode::Direct`]（不落盘）。
+    #[serde(default, skip_serializing_if = "LaunchMode::is_direct")]
+    pub launch_mode: LaunchMode,
     /// 启动 hook（启动前 / 启动后执行的 shell 命令），执行语义见 [`crate::runtime::hooks`]。
     #[serde(default, skip_serializing_if = "AppHooks::is_empty")]
     pub hooks: AppHooks,
+}
+
+/// 应用的启动方式（TOML 中的 `launch_mode`）。
+///
+/// | 取值 | 行为 |
+/// | --- | --- |
+/// | `direct`（缺省） | app_catch 自己 spawn 子进程：捕获 stdout/stderr，进程组整体回收；macOS 上隐私权限记在 app_catch 名下 |
+/// | `open` | 仅 macOS：交给 LaunchServices 打开 `.app`（等同点 Dock 图标），应用是自己的责任进程，权限与从 Dock 打开一致；已在运行时只切到前台。拿不到输出，只按 pid 跟踪运行状态 |
+///
+/// 非 macOS 平台上 `open` 按 `direct` 处理。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchMode {
+    /// 由 app_catch 直接 spawn。
+    #[default]
+    Direct,
+    /// 交给系统打开（macOS LaunchServices）。
+    Open,
+}
+
+impl LaunchMode {
+    /// 是否为缺省的直接启动（`skip_serializing_if` 用）。
+    pub fn is_direct(&self) -> bool {
+        matches!(self, Self::Direct)
+    }
 }
 
 /// 应用的启动 hook 配置（TOML 中的 `[hooks]` 表）。
@@ -194,6 +222,7 @@ impl AppConfig {
             icon: None,
             tags: Vec::new(),
             hooks: AppHooks::default(),
+            launch_mode: LaunchMode::Direct,
         }
     }
 }
@@ -369,6 +398,7 @@ mod tests {
                 after: vec!["echo started".to_string()],
                 timeout_secs: Some(120),
             },
+            launch_mode: LaunchMode::Open,
         }
     }
 
@@ -607,5 +637,21 @@ mod tests {
             AppCatchError::Parse { path: p, .. } => assert!(p.ends_with("broken.toml")),
             other => panic!("应为 Parse 错误，实际: {other:?}"),
         }
+    }
+
+    #[test]
+    fn launch_mode_defaults_to_direct_and_is_not_written() {
+        let minimal: AppConfig = toml::from_str("id = \"a\"\nname = \"A\"\ncommand = \"node\"\n")
+            .expect("旧配置应能解析");
+        assert_eq!(minimal.launch_mode, LaunchMode::Direct);
+        let text = toml::to_string_pretty(&minimal).expect("序列化失败");
+        assert!(!text.contains("launch_mode"), "缺省值不应落盘: {text}");
+
+        let mut open = minimal;
+        open.launch_mode = LaunchMode::Open;
+        let text = toml::to_string_pretty(&open).expect("序列化失败");
+        assert!(text.contains("launch_mode = \"open\""), "实际: {text}");
+        let back: AppConfig = toml::from_str(&text).expect("回读失败");
+        assert_eq!(back.launch_mode, LaunchMode::Open);
     }
 }

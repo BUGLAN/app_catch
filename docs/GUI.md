@@ -78,6 +78,18 @@
 
 ### 1.3 新建 / 编辑表单
 
+表单顶部是两个入口，选哪个决定自动填什么，下面的字段始终可以手动改：
+
+| 入口 | 选的是 | 自动填 |
+| --- | --- | --- |
+| 选择项目文件夹 | 一个目录（`pick_directory`） | 工作目录 = 所选目录，再 `detect_project` 识别项目类型、给出启动命令候选 |
+| 选择应用程序 | macOS `.app`，Windows `.exe` / `.bat` / `.cmd`（`pick_application`） | `inspect_application` 识别后填启动命令、名称、id（显示名推不出 id 时用文件名）；清空工作目录与参数；`.app` 默认「像 Dock 一样打开」 |
+
+编辑已有应用时按配置推断高亮哪个入口：`.app`，或没有工作目录的 `.exe` / `.bat` / `.cmd` 视为应用程序，其余视为项目。
+
+启动命令指向 `.app` 时出现「启动方式」单选（`launch_mode`）：「像 Dock 一样打开」（`open`）或「直接运行」（`direct`），
+下方说明随选项切换；命令不是 `.app` 时一律按 `direct` 提交。
+
 | 字段 | 约束 |
 | --- | --- |
 | id | 仅 `[A-Za-z0-9_-]`、长度 1–64，**实时校验**并就地提示；编辑时只读（id 是文件名，改名等于新建） |
@@ -162,8 +174,17 @@ hover 提示「该行原始字节既不是合法 UTF-8 也无法按 GBK 解码�
 | `update_app` | `config: AppConfigInput` | `AppConfig` | 不存在 → `not_found` |
 | `delete_app` | `id: string` | `null` | 只删配置，不碰会话目录 |
 
-`AppConfigInput` 字段：`id / name / command / args[] / cwd? / env{} / icon? / tags[]`。
+`AppConfigInput` 字段：`id / name / command / args[] / cwd? / env{} / icon? / tags[] / hooks / launch_mode`。
 `cwd` 与 `icon` 传空串等价于「未设置」，不会落盘成 `cwd = ""`。
+
+新建表单两个入口用到的选择与识别命令：
+
+| 命令 | 参数 | 返回 | 说明 |
+| --- | --- | --- | --- |
+| `pick_directory` | `defaultPath?: string` | `string \| null` | 原生「选择文件夹」对话框；取消返回 `null` |
+| `detect_project` | `dir: string` | `ProjectDetection` | 识别项目类型并给出启动命令候选（只读文件） |
+| `pick_application` | `defaultPath?: string` | `string \| null` | 原生「选择应用程序」对话框：macOS 只能选 `.app`（默认打开 /Applications），Windows 只能选 `.exe` / `.bat` / `.cmd`；取消返回 `null` |
+| `inspect_application` | `path: string` | `ApplicationInfo` | 识别选中的应用：`command / name / is_bundle / executable`；路径不存在 → `not_found`，普通文件夹 → `unsupported` |
 
 ### 2.2 会话生命周期
 

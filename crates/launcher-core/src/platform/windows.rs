@@ -583,6 +583,7 @@ impl ProcessBackend for WindowsProcessBackend {
                 handle,
                 stdout,
                 stderr,
+                notes: Vec::new(),
             })
         })
     }

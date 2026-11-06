@@ -11,6 +11,7 @@
 //! 在唯一豁免处显式 `#[allow(unsafe_code)]`，保证豁免点可枚举、可审计。
 #![deny(unsafe_code)]
 
+pub mod application;
 pub mod config;
 pub mod error;
 pub mod fsutil;
@@ -20,7 +21,7 @@ pub mod project;
 pub mod runtime;
 pub mod session;
 
-pub use config::{AppConfig, AppHooks, AppId, AppStore};
+pub use config::{AppConfig, AppHooks, AppId, AppStore, LaunchMode};
 pub use error::{AppCatchError, Result};
 pub use runtime::{ExitInfo, SessionHandle, SessionManager, SessionSnapshot};
 pub use session::{ExitReason, RunState, SessionEvent, SessionId, StreamKind};

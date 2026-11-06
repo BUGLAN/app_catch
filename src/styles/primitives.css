@@ -397,6 +397,84 @@
   min-width: 0;
 }
 
+/* 新建应用的两个入口：项目文件夹 / 应用程序 */
+.source-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-2);
+}
+
+.source-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2-5);
+  min-width: 0;
+  padding: var(--space-2-5) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-instant) var(--ease-standard);
+}
+
+.source-card > .icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--text-secondary);
+}
+
+.source-card:hover:not(:disabled) {
+  background: var(--hover-tint);
+  border-color: var(--border-strong);
+}
+
+.source-card:active:not(:disabled) {
+  transform: scale(var(--motion-scale-press));
+}
+
+.source-card:disabled {
+  color: var(--text-disabled);
+  border-color: var(--border-subtle);
+  cursor: not-allowed;
+}
+
+.source-card.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.source-card.is-active > .icon {
+  color: var(--accent-text);
+}
+
+.source-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+
+.source-card-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.source-card-desc {
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+}
+
+/* 启动方式单选：复用分段控件外观，窄屏时允许换行 */
+.launch-mode {
+  flex-wrap: wrap;
+  align-self: flex-start;
+}
+
 /* 工作目录识别出的启动命令候选 */
 .detect-panel {
   gap: var(--space-2);

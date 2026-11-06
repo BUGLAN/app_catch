@@ -29,6 +29,27 @@ export interface AppConfig {
   icon?: string | null;
   tags?: string[];
   hooks?: AppHooks;
+  /** 启动方式；缺省（不出现）即 direct。 */
+  launch_mode?: LaunchMode;
+}
+
+/**
+ * 启动方式：
+ * - `direct`：app_catch 直接运行，捕获输出；macOS 上隐私权限记在 app_catch 名下；
+ * - `open`：仅 macOS，交给系统打开 .app（等同点 Dock 图标），权限归应用自己，不捕获输出。
+ */
+export type LaunchMode = "direct" | "open";
+
+/** 「选择应用程序」后后端识别出的信息。 */
+export interface ApplicationInfo {
+  /** 建议写进启动命令的路径（.app 包本身或可执行文件）。 */
+  command: string;
+  /** 建议的应用名称。 */
+  name: string;
+  /** 是否 macOS .app 包。 */
+  is_bundle: boolean;
+  /** .app 包里真正的可执行文件。 */
+  executable: string | null;
 }
 
 /** 启动 hook：before 在主进程启动前执行（失败中止启动），after 在启动后后台执行。 */
@@ -49,6 +70,7 @@ export interface AppConfigInput {
   icon: string | null;
   tags: string[];
   hooks?: AppHooks;
+  launch_mode: LaunchMode;
 }
 
 /** 退出信息。 */

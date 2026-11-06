@@ -371,6 +371,72 @@ pub async fn detect_project(
         .map_err(|e| CommandError::new("internal", format!("项目识别任务失败：{e}")))
 }
 
+/// 弹出原生「选择应用程序」对话框；用户取消返回 `null`。
+///
+/// macOS 只允许选 `.app`（系统选择框把应用包当成单个文件），默认打开「应用程序」文件夹；
+/// Windows 只允许选 `.exe` / `.bat` / `.cmd`。
+#[tauri::command]
+pub async fn pick_application(
+    app: tauri::AppHandle,
+    default_path: Option<String>,
+) -> Result<Option<String>, CommandError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut builder = app.dialog().file().set_title("选择应用程序");
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.add_filter("应用程序", &["app"]);
+    }
+    #[cfg(windows)]
+    {
+        builder = builder.add_filter("可执行文件", &["exe", "bat", "cmd"]);
+    }
+    let start_dir = default_path
+        .map(|p| std::path::PathBuf::from(p.trim()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .and_then(|p| {
+            if p.is_dir() {
+                Some(p)
+            } else {
+                p.parent().map(Into::into)
+            }
+        })
+        .filter(|p: &std::path::PathBuf| p.is_dir());
+    #[cfg(target_os = "macos")]
+    let start_dir = start_dir.or_else(|| Some(std::path::PathBuf::from("/Applications")));
+    if let Some(dir) = start_dir {
+        builder = builder.set_directory(dir);
+    }
+    builder.pick_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let picked = rx
+        .await
+        .map_err(|_| CommandError::new("dialog", "文件选择框异常关闭"))?;
+    match picked {
+        None => Ok(None),
+        Some(path) => {
+            let path = path
+                .into_path()
+                .map_err(|e| CommandError::new("dialog", format!("无法解析所选路径：{e}")))?;
+            Ok(Some(path.to_string_lossy().into_owned()))
+        }
+    }
+}
+
+/// 识别用户选中的应用程序：名称、是否 `.app` 包、包内可执行文件（只读文件）。
+#[tauri::command]
+pub async fn inspect_application(
+    path: String,
+) -> Result<launcher_core::application::ApplicationInfo, CommandError> {
+    let path = std::path::PathBuf::from(path.trim());
+    tokio::task::spawn_blocking(move || launcher_core::application::inspect_application(&path))
+        .await
+        .map_err(|e| CommandError::new("internal", format!("应用识别任务失败：{e}")))?
+        .map_err(CommandError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

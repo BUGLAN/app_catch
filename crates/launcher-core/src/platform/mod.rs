@@ -22,10 +22,13 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 
-use crate::config::AppId;
+use crate::config::{AppId, LaunchMode};
 use crate::error::Result;
 use crate::session::SessionId;
 
+/// macOS `.app` 包读取：定位包、读 Info.plist、解析真正的可执行文件（不含 unsafe）。
+#[cfg(target_os = "macos")]
+pub mod bundle;
 #[cfg(not(windows))]
 pub mod fallback;
 /// 图标核心：位图规范化、PNG 编解码、缓存判定（**不含平台 API**，任何平台都能单测）。
@@ -197,6 +200,17 @@ pub struct SpawnRequest {
     pub cwd: Option<PathBuf>,
     /// 环境变量增量（在父进程环境基础上追加）。
     pub env: BTreeMap<String, String>,
+    /// 启动方式；构造时应先经过 [`effective_launch_mode`]，后端据此选择 spawn 或交给系统打开。
+    pub launch_mode: LaunchMode,
+}
+
+/// 当前平台实际生效的启动方式：`open` 只在 macOS 上有意义，其余平台退回 `direct`。
+pub fn effective_launch_mode(mode: LaunchMode) -> LaunchMode {
+    if cfg!(target_os = "macos") {
+        mode
+    } else {
+        LaunchMode::Direct
+    }
 }
 
 impl SpawnRequest {
@@ -209,6 +223,7 @@ impl SpawnRequest {
             args: Vec::new(),
             cwd: None,
             env: BTreeMap::new(),
+            launch_mode: LaunchMode::Direct,
         }
     }
 
@@ -232,6 +247,9 @@ pub struct SpawnedProcess {
     pub stdout: Option<Box<dyn tokio::io::AsyncRead + Send + Unpin>>,
     /// 子进程 stderr 读取端；后端未接管道时为 `None`。
     pub stderr: Option<Box<dyn tokio::io::AsyncRead + Send + Unpin>>,
+    /// 后端想告诉用户的说明（例如「已交给系统打开、不捕获输出」），
+    /// 由会话管理器以 `[app_catch]` 前缀的 output 事件写进日志，紧跟 start 之后。
+    pub notes: Vec<String>,
 }
 
 impl std::fmt::Debug for SpawnedProcess {
@@ -240,6 +258,7 @@ impl std::fmt::Debug for SpawnedProcess {
             .field("handle", &self.handle)
             .field("has_stdout", &self.stdout.is_some())
             .field("has_stderr", &self.stderr.is_some())
+            .field("notes", &self.notes)
             .finish()
     }
 }
@@ -251,6 +270,7 @@ impl SpawnedProcess {
             handle,
             stdout: None,
             stderr: None,
+            notes: Vec::new(),
         }
     }
 }
