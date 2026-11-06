@@ -29,29 +29,29 @@
 //! **不写日志、不返回错误、不 panic**——图标抓不到是预期内的正常情况
 //! （Python 服务类应用根本没有窗口）。
 
-#![allow(unsafe_code)]
+// unsafe 豁免在 platform/mod.rs 的模块声明处统一给出（便于审计），这里不再重复
 
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows_sys::Win32::System::Com::{
-    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
-};
 use windows_sys::Win32::Graphics::Gdi::{
-    BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
-    DeleteObject, GetDC, GetDIBits, GetObjectW, HDC, HBITMAP, HGDIOBJ, ReleaseDC,
+    CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+};
+use windows_sys::Win32::System::Com::{
+    CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
 };
 use windows_sys::Win32::UI::Shell::{
-    ExtractIconExW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGetFileInfoW,
+    ExtractIconExW, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CopyImage, DestroyIcon, GCLP_HICON, GCLP_HICONSM, GetClassLongPtrW, GetIconInfo, HICON,
-    ICON_BIG, ICON_SMALL, ICONINFO, IMAGE_ICON, LR_DEFAULTCOLOR, PrivateExtractIconsW,
-    SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_GETICON,
+    CopyImage, DestroyIcon, GetClassLongPtrW, GetIconInfo, PrivateExtractIconsW,
+    SendMessageTimeoutW, GCLP_HICON, GCLP_HICONSM, HICON, ICONINFO, ICON_BIG, ICON_SMALL,
+    IMAGE_ICON, LR_DEFAULTCOLOR, SMTO_ABORTIFHUNG, WM_GETICON,
 };
 
 use crate::platform::icon::{
-    CapturedIcon, IconSource, IconTier, RgbaImage, load_png_file, resolve_and_cache,
+    load_png_file, resolve_and_cache, CapturedIcon, IconSource, IconTier, RgbaImage,
 };
 use crate::platform::{IconCapture, IconTarget};
 
@@ -435,7 +435,13 @@ fn to_wide(path: &Path) -> Vec<u16> {
     let mut wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
-        .map(|unit| if unit == u16::from(b'/') { u16::from(b'\\') } else { unit })
+        .map(|unit| {
+            if unit == u16::from(b'/') {
+                u16::from(b'\\')
+            } else {
+                unit
+            }
+        })
         .collect();
     if wide.is_empty() {
         return wide;
@@ -676,7 +682,11 @@ mod tests {
         let cache = crate::paths::icons_dir()
             .expect("icons 目录")
             .join("ghost.png");
-        assert!(!cache.exists(), "抓不到时不应写缓存文件: {}", cache.display());
+        assert!(
+            !cache.exists(),
+            "抓不到时不应写缓存文件: {}",
+            cache.display()
+        );
 
         std::env::remove_var(crate::paths::HOME_ENV);
     }
@@ -724,8 +734,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("临时目录失败");
         let path = dir.path().join("blank.png");
         let image = RgbaImage::solid(32, 32, [0, 0, 0, 0]).expect("构造失败");
-        std::fs::write(&path, crate::platform::icon::encode_png(&image).expect("编码失败"))
-            .expect("写 PNG 失败");
+        std::fs::write(
+            &path,
+            crate::platform::icon::encode_png(&image).expect("编码失败"),
+        )
+        .expect("写 PNG 失败");
         assert!(file_icon(&path).is_none(), "全透明图不应被当作有效图标");
     }
 }

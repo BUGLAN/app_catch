@@ -17,7 +17,7 @@ use launcher_core::config::AppId;
 use launcher_core::platform::icon::{
     cache_path, is_script, load_png_file, read_tier, resolve_executable, tier_path,
 };
-use launcher_core::platform::{IconCapture, IconTarget, default_icon_capture};
+use launcher_core::platform::{default_icon_capture, IconCapture, IconTarget};
 
 fn main() {
     // 允许用 argv 覆盖默认值，便于在别的机器上跑
@@ -70,10 +70,7 @@ fn report(path: &PathBuf, app: &AppId) {
     println!("缓存路径 : {}", path.display());
     println!("文件大小 : {} 字节", meta.len());
     println!("图像尺寸 : {}x{}", image.width, image.height);
-    println!(
-        "档位     : {:?}",
-        read_tier(&tier_path(icons_dir, app))
-    );
+    println!("档位     : {:?}", read_tier(&tier_path(icons_dir, app)));
     // 顺带断言一下路径自洽：cache_path 与 tier_path 应该同目录同前缀
     debug_assert_eq!(cache_path(icons_dir, app), *path);
 }

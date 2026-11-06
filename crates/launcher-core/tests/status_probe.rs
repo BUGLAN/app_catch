@@ -88,7 +88,11 @@ fn fast_status_capture() -> CaptureConfig {
 /// 实际采样频率远低于配置的间隔。这里等的是「事实发生了」而不是「时间过去了」，
 /// 阈值只要够证明「多轮采样」这个性质即可，不追求精确频率——否则测试必然是 flaky 的。
 async fn wait_for_rounds(probe: &ScriptedProbe, rounds: usize, timeout_secs: u64) -> bool {
-    wait_until(|| probe.calls() >= rounds, Duration::from_secs(timeout_secs)).await
+    wait_until(
+        || probe.calls() >= rounds,
+        Duration::from_secs(timeout_secs),
+    )
+    .await
 }
 
 /// 关闭状态采集的配置（对照组用）。
@@ -127,8 +131,9 @@ fn read_all_events(dir: &std::path::Path) -> Vec<SessionEvent> {
                 continue;
             }
             events.push(
-                SessionEvent::from_jsonl_line(line)
-                    .unwrap_or_else(|e| panic!("日志行不可解析（{}）: {e}\n{line}", path.display())),
+                SessionEvent::from_jsonl_line(line).unwrap_or_else(|e| {
+                    panic!("日志行不可解析（{}）: {e}\n{line}", path.display())
+                }),
             );
         }
     }
@@ -346,7 +351,8 @@ async fn window_title_probe_reads_real_window_title() {
         .wait_for_exit(session.session_id, Duration::from_secs(30))
         .await;
 
-    let title = title.expect("应采到 powershell 的窗口标题（无桌面环境时本用例应被 --ignored 跳过）");
+    let title =
+        title.expect("应采到 powershell 的窗口标题（无桌面环境时本用例应被 --ignored 跳过）");
     println!("采到的窗口标题 = {title:?}");
     assert!(!title.trim().is_empty(), "窗口标题不应为空: {title:?}");
     assert_eq!(
@@ -509,7 +515,10 @@ async fn status_loop_terminates_after_process_exit() {
     );
 
     // 快照必须已收敛到退出态
-    let snapshot = manager.status(session.session_id).await.expect("查状态失败");
+    let snapshot = manager
+        .status(session.session_id)
+        .await
+        .expect("查状态失败");
     assert_eq!(snapshot.state, RunState::Exited);
     assert_eq!(
         snapshot.last_exit.map(|e| e.reason),
@@ -540,11 +549,17 @@ async fn snapshot_exposes_latest_status_for_gui() {
     let app = cmd_app(&["/c", "ping -n 60 127.0.0.1 > nul"]);
     let session = manager.start(&app).await.expect("启动失败");
 
-    assert!(wait_for_rounds(&probe, 1, 60).await, "状态循环应至少采样一次");
+    assert!(
+        wait_for_rounds(&probe, 1, 60).await,
+        "状态循环应至少采样一次"
+    );
     // 再等一小段，确保快照回写已完成
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let snapshot = manager.status(session.session_id).await.expect("查状态失败");
+    let snapshot = manager
+        .status(session.session_id)
+        .await
+        .expect("查状态失败");
     let latest = snapshot.latest_status.expect("应已有 latest_status");
     assert_eq!(latest.window_title.as_deref(), Some("GUI 主窗口"));
     assert_eq!(latest.ports, vec![8080, 8443]);
@@ -583,7 +598,10 @@ async fn disabled_status_loop_writes_no_events() {
     let events = read_all_events(&manager.session_dir(&session.session_id));
     assert_eq!(count_status(&events), 0, "禁用时不应写 status 事件");
 
-    let snapshot = manager.status(session.session_id).await.expect("查状态失败");
+    let snapshot = manager
+        .status(session.session_id)
+        .await
+        .expect("查状态失败");
     assert!(snapshot.latest_status.is_none(), "禁用时快照应保持 None");
 }
 

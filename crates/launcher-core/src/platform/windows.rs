@@ -20,24 +20,22 @@ use std::sync::{Arc, Mutex};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
 use windows_sys::Win32::Foundation::{
-    FILETIME, GetLastError, HANDLE, STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    GetLastError, FILETIME, HANDLE, STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-    TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOBOBJECT_BASIC_PROCESS_ID_LIST,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
-    SetInformationJobObject, TerminateJobObject,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, GetExitCodeProcess, GetProcessTimes, OpenProcess,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, TerminateProcess,
-    WaitForSingleObject,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
 };
 
 use crate::error::{AppCatchError, Result};
@@ -98,9 +96,8 @@ impl JobHandle {
     /// 新建匿名 Job 并开启 KILL_ON_JOB_CLOSE。
     fn create() -> Result<Self> {
         // SAFETY: 传空指针表示使用默认安全属性、匿名 Job；返回空句柄表示失败。
-        let raw = unsafe {
-            CreateJobObjectW(std::ptr::null::<SECURITY_ATTRIBUTES>(), std::ptr::null())
-        };
+        let raw =
+            unsafe { CreateJobObjectW(std::ptr::null::<SECURITY_ATTRIBUTES>(), std::ptr::null()) };
         let owned = OwnedWinHandle::from_raw(raw).ok_or_else(|| win32_error("CreateJobObjectW"))?;
 
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
@@ -196,12 +193,13 @@ impl JobHandle {
         // SAFETY: 已确认 count <= CAPACITY，且 offset 之后确有 CAPACITY 个 usize 的空间。
         let mut pids = Vec::with_capacity(count);
         for i in 0..count {
-            let pid = unsafe { *(buf.as_ptr().add(offset + i * std::mem::size_of::<usize>()) as *const usize) };
+            let pid = unsafe {
+                *(buf.as_ptr().add(offset + i * std::mem::size_of::<usize>()) as *const usize)
+            };
             pids.push(pid as u32);
         }
         Some(pids)
     }
-
 }
 
 /// 由 FILETIME 组合出 100ns 粒度的 u64 原始值。
@@ -388,11 +386,7 @@ pub struct WindowsProcessBackend {
 
 impl std::fmt::Debug for WindowsProcessBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let count = self
-            .children
-            .lock()
-            .map(|g| g.len())
-            .unwrap_or(0);
+        let count = self.children.lock().map(|g| g.len()).unwrap_or(0);
         f.debug_struct("WindowsProcessBackend")
             .field("tracked", &count)
             .finish()
@@ -414,7 +408,10 @@ impl WindowsProcessBackend {
     }
 
     /// 取出缓存的子进程与 Job（不拥有，只是克隆共享句柄）。
-    fn peek_child(&self, handle: &ProcessHandle) -> Option<(Arc<AsyncMutex<Child>>, Arc<JobHandle>)> {
+    fn peek_child(
+        &self,
+        handle: &ProcessHandle,
+    ) -> Option<(Arc<AsyncMutex<Child>>, Arc<JobHandle>)> {
         let guard = self.children.lock().unwrap_or_else(|e| e.into_inner());
         guard
             .get(&handle.start_time.as_raw())
@@ -446,7 +443,6 @@ impl WindowsProcessBackend {
         }
         collect_descendants(handle.pid)
     }
-
 
     /// 查询进程是否仍在运行：系统调用路径已足够，且天然校验 start_time。
     ///
@@ -502,7 +498,7 @@ impl ProcessBackend for WindowsProcessBackend {
                 path: request
                     .cwd
                     .clone()
-                    .unwrap_or_else(|| std::path::PathBuf::from(format!("{}", request.program))),
+                    .unwrap_or_else(|| std::path::PathBuf::from(request.program.clone())),
                 source: e,
             })?;
 
@@ -598,7 +594,6 @@ impl ProcessBackend for WindowsProcessBackend {
     fn descendant_pids(&self, handle: &ProcessHandle) -> Option<Vec<u32>> {
         Some(WindowsProcessBackend::descendant_pids_of(self, handle))
     }
-
 
     fn kill_tree<'a>(&'a self, handle: &'a ProcessHandle) -> BackendFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -723,7 +718,11 @@ impl ProcessBackend for WindowsProcessBackend {
 ///
 /// `TerminateJobObject` 是异步生效的：调用返回时进程可能还在收尾，
 /// 因此必须复查，否则调用方紧接着检查 pid 会看到「还以为活着」的假象。
-fn wait_tree_gone(handle: &ProcessHandle, descendants: &[u32], timeout: std::time::Duration) -> bool {
+fn wait_tree_gone(
+    handle: &ProcessHandle,
+    descendants: &[u32],
+    timeout: std::time::Duration,
+) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         let parent_gone = !is_alive_matching(handle);
@@ -737,7 +736,6 @@ fn wait_tree_gone(handle: &ProcessHandle, descendants: &[u32], timeout: std::tim
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
-
 
 /// 读取退出码；进程仍在运行（STILL_ACTIVE）时返回 None。
 fn observe_exit_code(process: HANDLE) -> Result<ExitStatusInfo> {

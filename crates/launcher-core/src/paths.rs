@@ -71,7 +71,12 @@ pub fn session_log_path(session_id: &SessionId) -> Result<PathBuf> {
 ///
 /// 已存在时不报错；权限不足等错误以 [`AppCatchError::Io`] 返回。
 pub fn ensure_layout() -> Result<()> {
-    for dir in [app_catch_home()?, apps_dir()?, sessions_dir()?, icons_dir()?] {
+    for dir in [
+        app_catch_home()?,
+        apps_dir()?,
+        sessions_dir()?,
+        icons_dir()?,
+    ] {
         std::fs::create_dir_all(&dir).map_err(|e| AppCatchError::io(dir, e))?;
     }
     Ok(())
@@ -148,7 +153,10 @@ pub(crate) mod tests {
             sessions_dir().expect("取 sessions 失败"),
             dir.path().join("sessions")
         );
-        assert_eq!(icons_dir().expect("取 icons 失败"), dir.path().join("icons"));
+        assert_eq!(
+            icons_dir().expect("取 icons 失败"),
+            dir.path().join("icons")
+        );
     }
 
     #[test]

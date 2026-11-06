@@ -95,7 +95,10 @@ impl TryFrom<&str> for AppId {
 }
 
 impl Serialize for AppId {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.0)
     }
 }
@@ -174,7 +177,7 @@ impl AppHooks {
 }
 
 /// `skip_serializing_if` 辅助：空路径不写入 TOML，避免产出 `cwd = ""` 这类噪音。
-fn is_empty_path(path: &PathBuf) -> bool {
+fn is_empty_path(path: &Path) -> bool {
     path.as_os_str().is_empty()
 }
 
@@ -223,13 +226,13 @@ impl AppStore {
 
     /// 幂等创建 `apps/` 目录。
     pub fn ensure_dir(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.apps_dir)
-            .map_err(|e| AppCatchError::io(&self.apps_dir, e))
+        std::fs::create_dir_all(&self.apps_dir).map_err(|e| AppCatchError::io(&self.apps_dir, e))
     }
 
     /// 某个应用的配置文件路径 `<apps>/<id>.toml`。
     pub fn config_path(&self, id: &AppId) -> PathBuf {
-        self.apps_dir.join(format!("{id}.{}", paths::APP_CONFIG_EXT))
+        self.apps_dir
+            .join(format!("{id}.{}", paths::APP_CONFIG_EXT))
     }
 
     /// 判断配置是否存在。
@@ -349,7 +352,11 @@ mod tests {
             id: AppId::new(id).expect("测试用 id 应合法"),
             name: "GPT-SoVITS".to_string(),
             command: "python".to_string(),
-            args: vec!["main.py".to_string(), "--port".to_string(), "9880".to_string()],
+            args: vec![
+                "main.py".to_string(),
+                "--port".to_string(),
+                "9880".to_string(),
+            ],
             cwd: PathBuf::from("E:/repo/GPT-SoVITS"),
             env: BTreeMap::from([
                 ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
@@ -418,7 +425,9 @@ mod tests {
             "应按 id 排序"
         );
 
-        let alpha = store.get(&AppId::new("alpha").expect("id")).expect("读取失败");
+        let alpha = store
+            .get(&AppId::new("alpha").expect("id"))
+            .expect("读取失败");
         assert_eq!(alpha, sample("alpha"));
         assert!(store.exists(&alpha.id));
 
@@ -471,7 +480,10 @@ mod tests {
         assert_eq!(parsed, config);
 
         // 字段名必须是 snake_case，且 id/name/env/args 以预期形式出现
-        assert!(text.contains("id = \"roundtrip\""), "TOML 应包含 id 字段:\n{text}");
+        assert!(
+            text.contains("id = \"roundtrip\""),
+            "TOML 应包含 id 字段:\n{text}"
+        );
         assert!(text.contains("name = "), "TOML 应包含 name 字段");
         assert!(text.contains("[env]"), "env 应以表形式输出:\n{text}");
         assert!(text.contains("args = ["), "args 应以数组输出:\n{text}");
@@ -527,7 +539,10 @@ mod tests {
         );
         let back = AppStore::to_toml(&config).expect("序列化失败");
         assert!(back.contains("[hooks]"), "hooks 应以表输出:\n{back}");
-        assert_eq!(AppStore::from_toml(Path::new("h.toml"), &back).expect("再解析"), config);
+        assert_eq!(
+            AppStore::from_toml(Path::new("h.toml"), &back).expect("再解析"),
+            config
+        );
     }
 
     #[test]
@@ -585,7 +600,9 @@ mod tests {
         let path = store.config_path(&AppId::new("broken").expect("id"));
         std::fs::write(&path, "id = 1\nname =").expect("写入坏配置失败");
 
-        let err = store.get(&AppId::new("broken").expect("id")).expect_err("应失败");
+        let err = store
+            .get(&AppId::new("broken").expect("id"))
+            .expect_err("应失败");
         match err {
             AppCatchError::Parse { path: p, .. } => assert!(p.ends_with("broken.toml")),
             other => panic!("应为 Parse 错误，实际: {other:?}"),

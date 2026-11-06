@@ -281,8 +281,9 @@ pub fn looks_like_png(bytes: &[u8]) -> bool {
 ///
 /// 缓存规格不超过 [`ICON_MAX_SIZE`]，所以优先 512 / 256 这两档：
 /// 1024（ic10）解码要多花 4 倍内存与时间，最后还是会被缩小。
-const ICNS_PNG_PREFERENCE: [&[u8; 4]; 8] =
-    [b"ic09", b"ic14", b"ic08", b"ic13", b"ic10", b"ic07", b"ic12", b"ic11"];
+const ICNS_PNG_PREFERENCE: [&[u8; 4]; 8] = [
+    b"ic09", b"ic14", b"ic08", b"ic13", b"ic10", b"ic07", b"ic12", b"ic11",
+];
 
 /// 从 macOS `.icns` 字节里取一张 PNG 编码的图（纯函数，任意平台可单测）。
 ///
@@ -328,7 +329,11 @@ pub fn decode_ico(bytes: &[u8]) -> Option<RgbaImage> {
     for index in 0..count {
         let entry = bytes.get(6 + index * 16..6 + (index + 1) * 16)?;
         // 宽高字节为 0 表示 256
-        let width = if entry[0] == 0 { 256 } else { u32::from(entry[0]) };
+        let width = if entry[0] == 0 {
+            256
+        } else {
+            u32::from(entry[0])
+        };
         let size = u32::from_le_bytes(entry[8..12].try_into().ok()?) as usize;
         let offset = u32::from_le_bytes(entry[12..16].try_into().ok()?) as usize;
         let Some(data) = bytes.get(offset..offset.checked_add(size)?) else {
@@ -355,7 +360,6 @@ pub fn load_image_file(path: &Path) -> Option<RgbaImage> {
     }
     decode_icns(&bytes).or_else(|| decode_ico(&bytes))
 }
-
 
 // ---------------------------------------------------------------------------
 // 抓取链路（来源抽象 + 缓存策略）
@@ -503,7 +507,11 @@ pub fn resolve_and_cache(
     let Some(captured) = source.produce(target) else {
         // 抓不到：保留已有缓存（可能是好的，只是这次没抓到），
         // 但如果是「无档位 + 无 exe」这种可疑组合，上面的分支已经处理掉了。
-        return if state == CacheState::Ready { Some(cache) } else { None };
+        return if state == CacheState::Ready {
+            Some(cache)
+        } else {
+            None
+        };
     };
     if captured.image.is_fully_transparent() {
         // 全透明的「图标」等于没有图标，不落盘，避免把空图当缓存固化下来
@@ -702,7 +710,6 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
-
 // ---------------------------------------------------------------------------
 // 会话可执行文件解析（供图标抓取用）
 // ---------------------------------------------------------------------------
@@ -829,7 +836,8 @@ mod icns_tests {
 
     #[test]
     fn picks_embedded_png_and_skips_legacy_entries() {
-        let png = encode_png(&RgbaImage::solid(16, 16, [1, 2, 3, 255]).expect("合法尺寸")).expect("编码失败");
+        let png = encode_png(&RgbaImage::solid(16, 16, [1, 2, 3, 255]).expect("合法尺寸"))
+            .expect("编码失败");
         let icns = icns_with(&[(b"it32", vec![0; 40]), (b"ic08", png)]);
         let image = decode_icns(&icns).expect("应解出内嵌 PNG");
         assert_eq!((image.width, image.height), (16, 16));
@@ -838,7 +846,10 @@ mod icns_tests {
     #[test]
     fn rejects_non_icns_and_truncated_data() {
         assert!(decode_icns(b"not an icns").is_none());
-        assert!(decode_icns(&icns_with(&[(b"it32", vec![0; 40])])).is_none(), "只有老格式条目时应返回 None");
+        assert!(
+            decode_icns(&icns_with(&[(b"it32", vec![0; 40])])).is_none(),
+            "只有老格式条目时应返回 None"
+        );
         let mut truncated = icns_with(&[(b"ic08", vec![0; 100])]);
         truncated.truncate(60);
         assert!(decode_icns(&truncated).is_none());
@@ -928,7 +939,10 @@ mod tests {
 
     #[test]
     fn rgba_image_rejects_mismatched_pixel_count() {
-        assert!(RgbaImage::new(2, 2, vec![0; 15]).is_none(), "长度不对应被拒绝");
+        assert!(
+            RgbaImage::new(2, 2, vec![0; 15]).is_none(),
+            "长度不对应被拒绝"
+        );
         assert!(RgbaImage::new(2, 2, vec![0; 16]).is_some());
         assert!(RgbaImage::new(0, 2, Vec::new()).is_none(), "零尺寸应被拒绝");
     }
@@ -1100,7 +1114,6 @@ mod tests {
         assert!(leftovers.is_empty(), "不应残留临时文件: {leftovers:?}");
     }
 
-
     // -----------------------------------------------------------------------
     // 抓取链路：缓存命中 / 失败不缓存 / 规范化入库
     // -----------------------------------------------------------------------
@@ -1134,7 +1147,9 @@ mod tests {
         fn produce(&self, _target: &IconTarget) -> Option<CapturedIcon> {
             self.calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.image.clone().map(|image| CapturedIcon::new(image, self.tier))
+            self.image
+                .clone()
+                .map(|image| CapturedIcon::new(image, self.tier))
         }
     }
 
@@ -1311,7 +1326,10 @@ mod tier_tests {
         let exe_source = TierSource::new(IconTier::Exe, [10, 10, 10, 255]);
         let cold = target("att", None);
         let path = resolve_and_cache(&exe_source, &icons, &cold).expect("应抓到");
-        assert_eq!(read_tier(&tier_path(&icons, &AppId::new("att").unwrap())), Some(IconTier::Exe));
+        assert_eq!(
+            read_tier(&tier_path(&icons, &AppId::new("att").unwrap())),
+            Some(IconTier::Exe)
+        );
         let low = load_png_file(&path).expect("读缓存");
         assert_eq!(low.pixels[0..4], [10, 10, 10, 255]);
 
@@ -1322,8 +1340,15 @@ mod tier_tests {
         assert_eq!(path2, path, "缓存路径不变");
         assert_eq!(window_source.calls(), 1, "有窗口时必须真的去问一次");
         let high = load_png_file(&path2).expect("读缓存");
-        assert_eq!(high.pixels[0..4], [200, 30, 40, 255], "真图标必须覆盖通用图标");
-        assert_eq!(read_tier(&tier_path(&icons, &AppId::new("att").unwrap())), Some(IconTier::Window));
+        assert_eq!(
+            high.pixels[0..4],
+            [200, 30, 40, 255],
+            "真图标必须覆盖通用图标"
+        );
+        assert_eq!(
+            read_tier(&tier_path(&icons, &AppId::new("att").unwrap())),
+            Some(IconTier::Window)
+        );
     }
 
     /// 项目档位：早先缓存了 Electron 默认图标（exe 档位），之后补上项目目录，
@@ -1341,16 +1366,28 @@ mod tier_tests {
         let with_project = target("proj", None).with_project_dir(Some(dir.path().to_path_buf()));
         let path = resolve_and_cache(&project_source, &icons, &with_project).expect("应抓到");
         assert_eq!(project_source.calls(), 1, "低于项目档位的缓存必须重问一次");
-        assert_eq!(load_png_file(&path).expect("读缓存").pixels[0..4], [0, 120, 200, 255]);
+        assert_eq!(
+            load_png_file(&path).expect("读缓存").pixels[0..4],
+            [0, 120, 200, 255]
+        );
         assert_eq!(read_tier(&tier_path(&icons, &app)), Some(IconTier::Project));
 
         resolve_and_cache(&project_source, &icons, &with_project).expect("应命中缓存");
-        assert_eq!(project_source.calls(), 1, "已是项目档位、又没有 pid：不应再问");
+        assert_eq!(
+            project_source.calls(),
+            1,
+            "已是项目档位、又没有 pid：不应再问"
+        );
     }
 
     #[test]
     fn tier_tags_round_trip_in_priority_order() {
-        let tiers = [IconTier::Exe, IconTier::Project, IconTier::Window, IconTier::Custom];
+        let tiers = [
+            IconTier::Exe,
+            IconTier::Project,
+            IconTier::Window,
+            IconTier::Custom,
+        ];
         assert!(tiers.windows(2).all(|pair| pair[0] < pair[1]));
         for tier in tiers {
             assert_eq!(IconTier::from_tag(tier.tag()), Some(tier));
@@ -1417,7 +1454,11 @@ mod tier_tests {
         std::fs::create_dir_all(&icons).expect("建目录");
         let stale = RgbaImage::solid(8, 8, [3, 3, 3, 255]).expect("构造失败");
         write_cache(&cache_path(&icons, &app), &stale).expect("写旧缓存");
-        assert_eq!(read_tier(&tier_path(&icons, &app)), None, "旧缓存没有档位信息");
+        assert_eq!(
+            read_tier(&tier_path(&icons, &app)),
+            None,
+            "旧缓存没有档位信息"
+        );
 
         let better = TierSource::new(IconTier::Window, [250, 250, 0, 255]);
         let path = resolve_and_cache(&better, &icons, &target("legacy", Some(9))).expect("应升级");
@@ -1440,7 +1481,10 @@ mod tier_tests {
         let second = TierSource::new(IconTier::Window, [2, 2, 2, 255]);
         let path = resolve_and_cache_forced(&second, &icons, &t).expect("强制应重抓");
         assert_eq!(second.calls(), 1, "forced 必须真的重抓");
-        assert_eq!(load_png_file(&path).expect("读缓存").pixels[0..4], [2, 2, 2, 255]);
+        assert_eq!(
+            load_png_file(&path).expect("读缓存").pixels[0..4],
+            [2, 2, 2, 255]
+        );
     }
 
     /// forced 版本仍然不许降级：用户自定义的图标不能被 exe 档位覆盖。
@@ -1455,7 +1499,10 @@ mod tier_tests {
 
         let bad = TierSource::new(IconTier::Exe, [0, 0, 0, 255]);
         resolve_and_cache_forced(&bad, &icons, &target("custom", Some(5))).expect("应返回旧图");
-        assert_eq!(load_png_file(&path).expect("读缓存").pixels[0..4], [7, 7, 7, 255]);
+        assert_eq!(
+            load_png_file(&path).expect("读缓存").pixels[0..4],
+            [7, 7, 7, 255]
+        );
         assert_eq!(read_tier(&tier_path(&icons, &app)), Some(IconTier::Custom));
     }
 

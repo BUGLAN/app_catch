@@ -177,7 +177,6 @@ fn session_doc_examples_match_code_output() {
     );
 }
 
-
 /// docs/ICONS.md 里声明的尺寸上限与缓存文件名规则必须与代码常量一致。
 ///
 /// 图标策略是「写进文档的产品决策」，文档与代码漂移比没有文档更糟：
@@ -188,7 +187,10 @@ fn icons_doc_matches_code_constants() {
 
     // 尺寸上限
     assert!(
-        doc.contains(&format!("≤ **{}px**", launcher_core::platform::ICON_MAX_SIZE)),
+        doc.contains(&format!(
+            "≤ **{}px**",
+            launcher_core::platform::ICON_MAX_SIZE
+        )),
         "docs/ICONS.md 应声明尺寸上限为 {}px",
         launcher_core::platform::ICON_MAX_SIZE
     );
@@ -228,10 +230,9 @@ fn icons_doc_matches_code_constants() {
 
 #[test]
 fn docs_are_linked_from_readme() {
-    let readme = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
-    )
-    .expect("读取 README.md 失败");
+    let readme =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))
+            .expect("读取 README.md 失败");
 
     for link in [
         "docs/CONFIG.md",

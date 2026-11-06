@@ -44,8 +44,8 @@ fn merged_windows(platform: Option<&str>) -> Vec<WindowConfig> {
     let mut base: Value = serde_json::from_str(&read_config("tauri.conf.json"))
         .expect("tauri.conf.json 必须是合法 JSON");
     if let Some(name) = platform {
-        let patch: Value =
-            serde_json::from_str(&read_config(name)).unwrap_or_else(|e| panic!("{name} 必须是合法 JSON: {e}"));
+        let patch: Value = serde_json::from_str(&read_config(name))
+            .unwrap_or_else(|e| panic!("{name} 必须是合法 JSON: {e}"));
         merge_patch(&mut base, &patch);
     }
     let config: Config = serde_json::from_value(base)
@@ -85,7 +85,7 @@ fn macos_patch_uses_transparent_borderless_window_for_custom_corners() {
         main.transparent,
         "必须透明：圆角外的四个小角要透出桌面，否则裁出来的是带底色的方角"
     );
-    assert_eq!(main.shadow, true, "无边框窗口仍要保留系统阴影");
+    assert!(main.shadow, "无边框窗口仍要保留系统阴影");
     assert!(main.resizable, "无边框窗口仍必须可缩放");
     assert!(
         main.background_color.is_none(),

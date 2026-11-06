@@ -8,7 +8,9 @@ use launcher_core::platform::icon::{load_png_file, resolve_executable};
 use launcher_core::platform::{default_icon_capture, IconCapture, IconTarget};
 
 fn main() {
-    let arg = std::env::args().nth(1).unwrap_or_else(|| "notepad".to_string());
+    let arg = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "notepad".to_string());
 
     // 尊重外部传入的 APP_CATCH_HOME（便于把证据产物留在固定位置）；
     // 没传就用独立临时目录，绝不污染真实 ~/.app_catch
@@ -23,8 +25,7 @@ fn main() {
     println!("输入命令   : {arg}");
     println!("解析到的 exe: {exe:?}");
 
-    let target = IconTarget::for_app(AppId::new("demo-app").expect("合法 id"))
-        .with_executable(exe);
+    let target = IconTarget::for_app(AppId::new("demo-app").expect("合法 id")).with_executable(exe);
 
     let capture = default_icon_capture();
     let started = std::time::Instant::now();
@@ -62,7 +63,10 @@ fn main() {
         .and_then(|m| m.modified().ok());
 
     println!("--- 二次调用（缓存） ---");
-    println!("返回路径   : {:?}", second.as_ref().map(|p| p.display().to_string()));
+    println!(
+        "返回路径   : {:?}",
+        second.as_ref().map(|p| p.display().to_string())
+    );
     println!("耗时       : {second_us} us");
     println!("mtime 未变 : {}", mtime_before == mtime_after);
 

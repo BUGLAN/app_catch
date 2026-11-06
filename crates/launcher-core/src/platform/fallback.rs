@@ -30,7 +30,10 @@ fn not_implemented(op: &str) -> AppCatchError {
 }
 
 impl ProcessBackend for FallbackProcessBackend {
-    fn spawn<'a>(&'a self, _request: &'a SpawnRequest) -> BackendFuture<'a, Result<SpawnedProcess>> {
+    fn spawn<'a>(
+        &'a self,
+        _request: &'a SpawnRequest,
+    ) -> BackendFuture<'a, Result<SpawnedProcess>> {
         Box::pin(async move { Err(not_implemented("spawn")) })
     }
 

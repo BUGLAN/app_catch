@@ -18,7 +18,9 @@ use launcher_core::platform::{ProcessBackend, SpawnRequest, WindowsProcessBacken
 ///
 /// 用 cmd 的多级 start 构造真实的多层树：单层测试无法区分
 /// 「Job 成员表」与「只看直接子进程」这两种实现。
-async fn spawn_chain(backend: &WindowsProcessBackend) -> (launcher_core::platform::ProcessHandle, Vec<u32>) {
+async fn spawn_chain(
+    backend: &WindowsProcessBackend,
+) -> (launcher_core::platform::ProcessHandle, Vec<u32>) {
     // 根 cmd 起一个子 cmd，子 cmd 再起一个长时间运行的 node/ping。
     // 用 ping 作为叶子：Windows 自带、可控时长、不会被当成脚本立即退出。
     let mut req = SpawnRequest::new(

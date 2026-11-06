@@ -64,10 +64,12 @@ impl FromStr for SessionId {
     type Err = AppCatchError;
 
     fn from_str(s: &str) -> Result<Self> {
-        Uuid::parse_str(s).map(Self).map_err(|e| AppCatchError::InvalidId {
-            value: s.to_string(),
-            reason: format!("不是合法的 uuid: {e}"),
-        })
+        Uuid::parse_str(s)
+            .map(Self)
+            .map_err(|e| AppCatchError::InvalidId {
+                value: s.to_string(),
+                reason: format!("不是合法的 uuid: {e}"),
+            })
     }
 }
 
@@ -78,7 +80,10 @@ impl From<Uuid> for SessionId {
 }
 
 impl Serialize for SessionId {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.0.to_string())
     }
 }
@@ -125,10 +130,11 @@ pub const DEFAULT_OUTPUT_ENCODING: &str = "utf-8";
 /// - `utf-8`：原始字节本身是合法 UTF-8，无损；
 /// - `gbk`：原始字节不是合法 UTF-8，但按 GBK/GB18030（cp936）无损解码成功；
 /// - `lossy`：两种解码都失败，内容已被替换字符替代，**原始字节不可还原**。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OutputEncoding {
     /// 合法 UTF-8，无损解码。
     #[serde(rename = "utf-8")]
+    #[default]
     Utf8,
     /// 按 GBK/GB18030（cp936）无损解码。
     #[serde(rename = "gbk")]
@@ -146,12 +152,6 @@ impl OutputEncoding {
             OutputEncoding::Gbk => "gbk",
             OutputEncoding::Lossy => "lossy",
         }
-    }
-}
-
-impl Default for OutputEncoding {
-    fn default() -> Self {
-        Self::Utf8
     }
 }
 
@@ -419,7 +419,8 @@ impl SessionEvent {
     /// 若内容中出现换行符（理论上 serde_json 会转义，仍显式校验一次），返回
     /// [`AppCatchError::Serialize`]，避免写出破坏 JSONL 行语义的数据。
     pub fn to_jsonl_line(&self) -> Result<String> {
-        let text = serde_json::to_string(self).map_err(|e| AppCatchError::Serialize(e.to_string()))?;
+        let text =
+            serde_json::to_string(self).map_err(|e| AppCatchError::Serialize(e.to_string()))?;
         if text.contains('\n') || text.contains('\r') {
             return Err(AppCatchError::Serialize(
                 "序列化结果包含换行符，会破坏 JSONL 行结构".to_string(),
@@ -594,7 +595,10 @@ mod tests {
         let line = status.to_jsonl_line().expect("序列化失败");
         assert!(line.contains("\"window_title\":null"));
         assert!(line.contains("\"ports\":null"));
-        assert_eq!(SessionEvent::from_jsonl_line(&line).expect("反序列化失败"), status);
+        assert_eq!(
+            SessionEvent::from_jsonl_line(&line).expect("反序列化失败"),
+            status
+        );
 
         // 缺失可选字段时也应能解析（向后兼容旧事件）
         let minimal = r#"{"event":"exit","v":1,"ts":"2026-01-01T00:00:00Z","reason":"killed"}"#;
@@ -619,7 +623,9 @@ mod tests {
         );
 
         match SessionEvent::from_jsonl_line(&line).expect("反序列化失败") {
-            SessionEvent::Start { start_time, pid, .. } => {
+            SessionEvent::Start {
+                start_time, pid, ..
+            } => {
                 assert_eq!(start_time, 133_000_000_000_000_000);
                 assert_eq!(pid, 4242);
             }
@@ -662,15 +668,21 @@ mod tests {
     /// output 事件必须显式带 encoding 字段，且取值为约定字符串。
     #[test]
     fn output_event_carries_encoding_field() {
-        let event = SessionEvent::output_with_encoding(
-            StreamKind::Stdout,
-            "中文测试",
-            OutputEncoding::Gbk,
-        );
+        let event =
+            SessionEvent::output_with_encoding(StreamKind::Stdout, "中文测试", OutputEncoding::Gbk);
         let line = event.to_jsonl_line().expect("序列化失败");
-        assert!(line.contains("\"encoding\":\"gbk\""), "应包含 encoding 字段: {line}");
-        assert!(line.contains("\"line\":\"中文测试\""), "行内容不得损坏: {line}");
-        assert_eq!(SessionEvent::from_jsonl_line(&line).expect("反序列化失败"), event);
+        assert!(
+            line.contains("\"encoding\":\"gbk\""),
+            "应包含 encoding 字段: {line}"
+        );
+        assert!(
+            line.contains("\"line\":\"中文测试\""),
+            "行内容不得损坏: {line}"
+        );
+        assert_eq!(
+            SessionEvent::from_jsonl_line(&line).expect("反序列化失败"),
+            event
+        );
     }
 
     /// 向后兼容：旧日志的 output 事件没有 encoding 字段，必须能解析且默认 utf-8。
@@ -681,9 +693,7 @@ mod tests {
             "\"stream\":\"stdout\",\"line\":\"服务已启动\"}"
         );
         match SessionEvent::from_jsonl_line(legacy).expect("旧 output 事件应可解析") {
-            SessionEvent::Output {
-                line, encoding, ..
-            } => {
+            SessionEvent::Output { line, encoding, .. } => {
                 assert_eq!(line, "服务已启动");
                 assert_eq!(
                     encoding,

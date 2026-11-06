@@ -19,11 +19,19 @@ fn manager(root: &std::path::Path) -> SessionManager {
         status_interval: None,
         ..CaptureConfig::default()
     };
-    SessionManager::new(Arc::new(default_process_backend()), capture, root.join("sessions"))
+    SessionManager::new(
+        Arc::new(default_process_backend()),
+        capture,
+        root.join("sessions"),
+    )
 }
 
 fn sh_app(cwd: &std::path::Path, script: &str, hooks: AppHooks) -> AppConfig {
-    let mut app = AppConfig::new(AppId::new("hook-demo").expect("合法 id"), "hook 演示", "/bin/sh");
+    let mut app = AppConfig::new(
+        AppId::new("hook-demo").expect("合法 id"),
+        "hook 演示",
+        "/bin/sh",
+    );
     app.args = vec!["-c".to_string(), script.to_string()];
     app.cwd = cwd.to_path_buf();
     app.hooks = hooks;
@@ -81,8 +89,13 @@ async fn before_hook_runs_before_main_process_and_is_logged_after_start() {
         .iter()
         .position(|l| l == "pulled-hook-demo-before")
         .unwrap_or_else(|| panic!("主进程应读到 before hook 写的文件: {lines:?}"));
-    assert!(hook_pos < main_pos, "before 输出应排在主进程输出之前: {lines:?}");
-    assert!(lines.iter().any(|l| l.starts_with("[before] 完成（退出码 0")));
+    assert!(
+        hook_pos < main_pos,
+        "before 输出应排在主进程输出之前: {lines:?}"
+    );
+    assert!(lines
+        .iter()
+        .any(|l| l.starts_with("[before] 完成（退出码 0")));
 }
 
 #[tokio::test]
@@ -101,7 +114,10 @@ async fn failing_before_hook_aborts_start_without_session_dir() {
         },
     );
 
-    let err = manager.start(&app).await.expect_err("before 失败应中止启动");
+    let err = manager
+        .start(&app)
+        .await
+        .expect_err("before 失败应中止启动");
     match &err {
         AppCatchError::HookFailed(msg) => {
             assert!(msg.contains("退出码 3"), "应带退出码: {msg}");
@@ -110,7 +126,10 @@ async fn failing_before_hook_aborts_start_without_session_dir() {
         other => panic!("应为 HookFailed，实际: {other:?}"),
     }
     assert!(!dir.path().join("main-ran.txt").exists(), "主进程不应启动");
-    assert!(!dir.path().join("second-hook-ran.txt").exists(), "后续 hook 不应执行");
+    assert!(
+        !dir.path().join("second-hook-ran.txt").exists(),
+        "后续 hook 不应执行"
+    );
     let sessions = dir.path().join("sessions");
     let count = std::fs::read_dir(&sessions).map(|d| d.count()).unwrap_or(0);
     assert_eq!(count, 0, "失败时不应留下会话目录");
@@ -131,8 +150,14 @@ async fn before_hook_timeout_is_a_failure() {
     );
     let started = std::time::Instant::now();
     let err = manager.start(&app).await.expect_err("超时应失败");
-    assert!(matches!(&err, AppCatchError::HookFailed(m) if m.contains("超时")), "{err:?}");
-    assert!(started.elapsed() < Duration::from_secs(10), "超时后应及时返回");
+    assert!(
+        matches!(&err, AppCatchError::HookFailed(m) if m.contains("超时")),
+        "{err:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "超时后应及时返回"
+    );
 }
 
 #[tokio::test]
@@ -163,16 +188,30 @@ async fn after_hook_runs_once_main_process_started_and_failure_keeps_it_running(
         if done {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "after hook 应在 10 秒内跑完");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "after hook 应在 10 秒内跑完"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     let pid = std::fs::read_to_string(&pid_file).expect("after hook 应写 pid 文件");
-    assert_eq!(pid.trim(), handle.snapshot.pid.to_string(), "应注入主进程 pid");
-    assert!(!dir.path().join("third-after-ran.txt").exists(), "失败后不再执行后续 after hook");
+    assert_eq!(
+        pid.trim(),
+        handle.snapshot.pid.to_string(),
+        "应注入主进程 pid"
+    );
+    assert!(
+        !dir.path().join("third-after-ran.txt").exists(),
+        "失败后不再执行后续 after hook"
+    );
 
     let status = manager.status(handle.session_id).await.expect("会话应存在");
-    assert_eq!(status.state, launcher_core::RunState::Running, "after 失败不影响主进程");
+    assert_eq!(
+        status.state,
+        launcher_core::RunState::Running,
+        "after 失败不影响主进程"
+    );
 
     manager.stop(handle.session_id).await.expect("停止失败");
     manager

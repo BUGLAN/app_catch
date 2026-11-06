@@ -187,7 +187,8 @@ mod tests {
     #[test]
     fn corner_radius_matches_css_token() {
         // 外框圆角（Rust）与内容区圆角（CSS）必须同值，否则又回到「两处圆角不一样」
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/styles/tokens.css");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/styles/tokens.css");
         let css = std::fs::read_to_string(&path).expect("读取 tokens.css 失败");
         let block_start = css
             .find(":root[data-platform=\"macos\"]")

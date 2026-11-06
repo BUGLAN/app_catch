@@ -25,7 +25,7 @@
 //! 回调读取后立即归还；窗口句柄由系统持有，本模块不打开任何需要关闭的句柄，
 //! 因此不存在泄漏路径。
 
-#![allow(unsafe_code)]
+// unsafe 豁免在 platform/mod.rs 的模块声明处统一给出（便于审计），这里不再重复
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -157,12 +157,7 @@ fn collect_candidates(pids: &[u32]) -> Option<Vec<Candidate>> {
     };
     // SAFETY: 把 &mut ctx 的地址作为 LPARAM 传给 EnumWindows；EnumWindows 是同步调用，
     // 返回时所有回调都已结束，ctx 的借用随之结束，不存在悬垂指针。
-    let ok = unsafe {
-        EnumWindows(
-            Some(enum_proc),
-            &mut ctx as *mut EnumContext<'_> as LPARAM,
-        )
-    };
+    let ok = unsafe { EnumWindows(Some(enum_proc), &mut ctx as *mut EnumContext<'_> as LPARAM) };
     if ok == 0 {
         return None;
     }
@@ -178,7 +173,10 @@ fn collect_candidates(pids: &[u32]) -> Option<Vec<Candidate>> {
 /// 用途：M3 的运行时图标抓取（对主窗口发 WM_GETICON）。
 pub fn main_window_for_pids(pids: &[u32]) -> Option<HWND> {
     let candidates = collect_candidates(pids)?;
-    candidates.into_iter().max_by_key(|c| c.area).map(|c| c.hwnd)
+    candidates
+        .into_iter()
+        .max_by_key(|c| c.area)
+        .map(|c| c.hwnd)
 }
 
 /// 取目标进程树中「主窗口」的标题；找不到返回 `None`（不报错）。
@@ -187,7 +185,10 @@ pub fn main_window_for_pids(pids: &[u32]) -> Option<HWND> {
 /// 因为 GUI 应用常见的情况是「启动器直接拉起的是 shim/启动脚本，真正的窗口属于它的子进程」。
 pub fn window_title_for_pids(pids: &[u32]) -> Option<String> {
     let candidates = collect_candidates(pids)?;
-    candidates.into_iter().max_by_key(|c| c.area).map(|c| c.title)
+    candidates
+        .into_iter()
+        .max_by_key(|c| c.area)
+        .map(|c| c.title)
 }
 
 /// 取指定根 pid 及其子孙进程的「主窗口」标题；找不到返回 `None`。
@@ -211,7 +212,11 @@ mod tests {
     fn empty_pid_list_yields_none() {
         assert_eq!(window_title_for_pids(&[]), None);
         assert_eq!(window_title_for_pid(0), None);
-        assert_eq!(main_window_for_pids(&[]), None, "空列表不应返回任何窗口句柄");
+        assert_eq!(
+            main_window_for_pids(&[]),
+            None,
+            "空列表不应返回任何窗口句柄"
+        );
     }
 
     /// 当前测试进程通常没有可见的顶层窗口（cargo test 是控制台进程）。

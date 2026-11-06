@@ -103,7 +103,8 @@ impl HookContext {
     /// 注入主进程 pid（after 阶段用）。
     #[must_use]
     pub fn with_pid(mut self, pid: u32) -> Self {
-        self.env.insert("APP_CATCH_PID".to_string(), pid.to_string());
+        self.env
+            .insert("APP_CATCH_PID".to_string(), pid.to_string());
         self
     }
 
@@ -113,9 +114,10 @@ impl HookContext {
         request.args = args;
         request.cwd = self.cwd.clone();
         request.env = self.env.clone();
-        request
-            .env
-            .insert("APP_CATCH_HOOK_STAGE".to_string(), stage.as_str().to_string());
+        request.env.insert(
+            "APP_CATCH_HOOK_STAGE".to_string(),
+            stage.as_str().to_string(),
+        );
         request
     }
 }
@@ -128,7 +130,10 @@ fn shell_invocation(command: &str) -> (String, Vec<String>) {
             vec!["/D".into(), "/S".into(), "/C".into(), command.to_string()],
         )
     } else {
-        ("/bin/sh".to_string(), vec!["-c".into(), command.to_string()])
+        (
+            "/bin/sh".to_string(),
+            vec!["-c".into(), command.to_string()],
+        )
     }
 }
 
@@ -216,10 +221,20 @@ pub async fn run_hook(
     let (tx, mut rx) = mpsc::unbounded_channel::<(SessionEvent, String)>();
     let mut pumps = Vec::new();
     if let Some(stdout) = spawned.stdout {
-        pumps.push(tokio::spawn(pump(stdout, StreamKind::Stdout, prefix.clone(), tx.clone())));
+        pumps.push(tokio::spawn(pump(
+            stdout,
+            StreamKind::Stdout,
+            prefix.clone(),
+            tx.clone(),
+        )));
     }
     if let Some(stderr) = spawned.stderr {
-        pumps.push(tokio::spawn(pump(stderr, StreamKind::Stderr, prefix.clone(), tx.clone())));
+        pumps.push(tokio::spawn(pump(
+            stderr,
+            StreamKind::Stderr,
+            prefix.clone(),
+            tx.clone(),
+        )));
     }
     drop(tx);
 
@@ -383,7 +398,7 @@ fn hook_error(stage: HookStage, outcome: &HookOutcome, timeout: Duration) -> App
         outcome.summary(timeout)
     );
     if !outcome.tail.is_empty() {
-        message.push_str("\n");
+        message.push('\n');
         message.push_str(&outcome.tail.join("\n"));
     }
     AppCatchError::HookFailed(message)
@@ -401,7 +416,10 @@ mod tests {
             assert_eq!(args.last().map(String::as_str), Some("git pull && echo ok"));
         } else {
             assert_eq!(program, "/bin/sh");
-            assert_eq!(args, vec!["-c".to_string(), "git pull && echo ok".to_string()]);
+            assert_eq!(
+                args,
+                vec!["-c".to_string(), "git pull && echo ok".to_string()]
+            );
         }
     }
 

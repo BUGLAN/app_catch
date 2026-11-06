@@ -62,7 +62,11 @@ fn tiny_capture() -> CaptureConfig {
 }
 
 /// 跑一个会话并等它结束，返回会话 id 与会话目录。
-async fn run_session(manager: &SessionManager, app: &AppConfig, lines: usize) -> std::path::PathBuf {
+async fn run_session(
+    manager: &SessionManager,
+    app: &AppConfig,
+    lines: usize,
+) -> std::path::PathBuf {
     let handle = manager.start(app).await.expect("启动会话失败");
     let dir = manager.session_dir(&handle.session_id);
 
@@ -138,7 +142,10 @@ async fn paginated_read_across_real_shards_matches_full_file_content() {
             name.starts_with("events.") && name.ends_with(".jsonl")
         })
         .count();
-    assert!(shard_count > 0, "配置应触发轮转，实际分片数 = {shard_count}");
+    assert!(
+        shard_count > 0,
+        "配置应触发轮转，实际分片数 = {shard_count}"
+    );
 
     // 用很小的页大小分页读完全量，模拟界面逐轮轮询
     let reader = SessionEventReader::new();
@@ -146,9 +153,7 @@ async fn paginated_read_across_real_shards_matches_full_file_content() {
     let mut cursor: u64 = 0;
     let mut pages = 0;
     loop {
-        let page = reader
-            .read_page(&dir, cursor, 3)
-            .expect("分页读取失败");
+        let page = reader.read_page(&dir, cursor, 3).expect("分页读取失败");
         assert_eq!(page.skipped_lines, 0, "真实产物不应有不可解析的行");
         collected.extend(page.events.clone());
         assert!(page.next_line >= cursor, "游标不得回退");
@@ -215,7 +220,10 @@ async fn reading_same_cursor_twice_is_idempotent() {
     let second = reader
         .read_page(&dir, first.next_line, 4)
         .expect("续读失败");
-    assert_eq!(second.next_line, first.next_line + second.events.len() as u64);
+    assert_eq!(
+        second.next_line,
+        first.next_line + second.events.len() as u64
+    );
 }
 
 /// 「按文件顺序直读」的独立实现，用于交叉验证读取器。
@@ -229,7 +237,10 @@ fn read_all_direct(dir: &std::path::Path) -> Vec<SessionEvent> {
             continue;
         }
         if let Some(rest) = name.strip_prefix("events.") {
-            if let Some(seq) = rest.strip_suffix(".jsonl").and_then(|s| s.parse::<u32>().ok()) {
+            if let Some(seq) = rest
+                .strip_suffix(".jsonl")
+                .and_then(|s| s.parse::<u32>().ok())
+            {
                 shards.push((seq, entry.path()));
             }
         }

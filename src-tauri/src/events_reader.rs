@@ -372,8 +372,7 @@ mod tests {
             let path = dir.path().join(name);
             let mut file = File::create(&path).expect("创建事件文件失败");
             for event in list {
-                writeln!(file, "{}", event.to_jsonl_line().expect("序列化失败"))
-                    .expect("写入失败");
+                writeln!(file, "{}", event.to_jsonl_line().expect("序列化失败")).expect("写入失败");
             }
             file.flush().expect("flush 失败");
         }
@@ -405,8 +404,7 @@ mod tests {
             .open(path)
             .expect("打开活跃片失败");
         for event in events {
-            writeln!(file, "{}", event.to_jsonl_line().expect("序列化失败"))
-                .expect("追加失败");
+            writeln!(file, "{}", event.to_jsonl_line().expect("序列化失败")).expect("追加失败");
         }
         file.flush().expect("flush 失败");
     }
@@ -533,7 +531,7 @@ mod tests {
             .append(true)
             .open(&path)
             .expect("打开失败");
-        write!(file, "\n").expect("补写失败");
+        writeln!(file).expect("补写失败");
         file.flush().expect("flush 失败");
         drop(file);
 
@@ -617,7 +615,7 @@ mod tests {
             .append(true)
             .open(&path)
             .expect("打开失败");
-        write!(file, "\n").expect("补写失败");
+        writeln!(file).expect("补写失败");
         file.flush().expect("flush 失败");
         drop(file);
 

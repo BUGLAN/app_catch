@@ -24,6 +24,8 @@
 
 use std::sync::Arc;
 
+// 只有 Windows 的窗口标题 / 端口 probe 用到平台层
+#[cfg(windows)]
 use crate::platform;
 
 /// 每次 probe 的只读上下文。
@@ -162,7 +164,10 @@ pub struct CompositeProbe {
 impl std::fmt::Debug for CompositeProbe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompositeProbe")
-            .field("probes", &self.probes.iter().map(|p| p.name()).collect::<Vec<_>>())
+            .field(
+                "probes",
+                &self.probes.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -199,7 +204,8 @@ impl StatusProbe for CompositeProbe {
     fn probe(&self, ctx: &ProbeContext) -> StatusSnapshot {
         let mut merged = StatusSnapshot::empty();
         for probe in &self.probes {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe.probe(ctx)));
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe.probe(ctx)));
             // 单个 probe panic 只丢它自己那部分：继续跑下一个
             let Ok(partial) = outcome else {
                 continue;

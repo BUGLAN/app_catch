@@ -89,8 +89,16 @@ mod tests {
     fn not_found_maps_to_chinese_message_and_kind() {
         let err: CommandError = AppCatchError::not_found("应用配置 ghost").into();
         assert_eq!(err.kind, "not_found");
-        assert!(err.message.contains("未找到"), "文案应为中文: {}", err.message);
-        assert!(err.message.contains("ghost"), "文案应带上下文: {}", err.message);
+        assert!(
+            err.message.contains("未找到"),
+            "文案应为中文: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("ghost"),
+            "文案应带上下文: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -128,10 +136,7 @@ mod tests {
         for (source, expected) in cases {
             let converted: CommandError = source.into();
             assert_eq!(converted.kind, expected);
-            assert!(
-                !converted.message.is_empty(),
-                "{expected} 的文案不应为空"
-            );
+            assert!(!converted.message.is_empty(), "{expected} 的文案不应为空");
         }
     }
 

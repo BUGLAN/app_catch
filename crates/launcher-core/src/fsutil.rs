@@ -15,14 +15,12 @@ use crate::error::{AppCatchError, Result};
 /// 步骤：在同目录创建唯一临时文件 `<name>.tmp-<pid>-<nanos>` → 写入 → `sync_all` → `rename`。
 /// 任一环节失败都会清理临时文件并返回 `AppCatchError::Io`。
 pub fn write_atomic(target: &Path, contents: &str) -> Result<()> {
-    let parent = target.parent().ok_or_else(|| {
-        AppCatchError::Io {
-            path: target.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "目标路径没有父目录，无法原子写入",
-            ),
-        }
+    let parent = target.parent().ok_or_else(|| AppCatchError::Io {
+        path: target.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "目标路径没有父目录，无法原子写入",
+        ),
     })?;
 
     fs::create_dir_all(parent).map_err(|e| AppCatchError::io(parent, e))?;
@@ -88,7 +86,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.contains(".tmp-"))
             .collect();
-        assert!(leftovers.is_empty(), "不应残留临时文件，实际: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "不应残留临时文件，实际: {leftovers:?}"
+        );
     }
 
     #[test]

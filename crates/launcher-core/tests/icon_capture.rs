@@ -16,7 +16,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use launcher_core::config::{AppConfig, AppId};
-use launcher_core::platform::icon::{ICON_MAX_SIZE, looks_like_png};
+use launcher_core::platform::icon::{looks_like_png, ICON_MAX_SIZE};
 use launcher_core::platform::{
     default_icon_capture, default_process_backend, file_icon, window_icon_for_pids, IconCapture,
     IconTarget,
@@ -49,8 +49,11 @@ impl TestEnv {
     }
 
     fn manager(&self) -> SessionManager {
-        SessionManager::from_home(Arc::new(default_process_backend()), CaptureConfig::default())
-            .expect("构造 SessionManager 失败")
+        SessionManager::from_home(
+            Arc::new(default_process_backend()),
+            CaptureConfig::default(),
+        )
+        .expect("构造 SessionManager 失败")
     }
 
     fn target(&self, app_id: &str) -> IconTarget {
@@ -208,7 +211,11 @@ fn capture_writes_png_cache_and_second_call_hits_it() {
 
     let bytes = std::fs::read(&path).expect("读缓存失败");
     assert!(looks_like_png(&bytes), "缓存必须是 PNG");
-    assert!(bytes.len() > 100, "PNG 不应是空壳，实际 {} 字节", bytes.len());
+    assert!(
+        bytes.len() > 100,
+        "PNG 不应是空壳，实际 {} 字节",
+        bytes.len()
+    );
 
     let decoded = launcher_core::platform::icon::load_png_file(&path).expect("缓存应可解码");
     println!(
@@ -268,7 +275,9 @@ fn missing_executable_falls_back_silently() {
 #[test]
 fn empty_target_falls_back_silently() {
     let env = TestEnv::new();
-    assert!(default_icon_capture().capture(&env.target("nothing")).is_none());
+    assert!(default_icon_capture()
+        .capture(&env.target("nothing"))
+        .is_none());
     assert!(!env.icons_dir().join("nothing.png").exists());
 }
 
@@ -301,8 +310,8 @@ fn valid_custom_icon_wins_over_executable() {
 
     // 造一张 40x40 的纯绿自定义图标
     let custom = env.dir.path().join("my-icon.png");
-    let image = launcher_core::platform::RgbaImage::solid(40, 40, [0, 200, 0, 255])
-        .expect("构造失败");
+    let image =
+        launcher_core::platform::RgbaImage::solid(40, 40, [0, 200, 0, 255]).expect("构造失败");
     std::fs::write(
         &custom,
         launcher_core::platform::icon::encode_png(&image).expect("编码失败"),
@@ -316,7 +325,9 @@ fn valid_custom_icon_wins_over_executable() {
             "C:/Windows/System32/notepad.exe",
         )));
 
-    let path = default_icon_capture().capture(&target).expect("应抓到自定义图标");
+    let path = default_icon_capture()
+        .capture(&target)
+        .expect("应抓到自定义图标");
     let stored = launcher_core::platform::icon::load_png_file(&path).expect("解码失败");
     assert_eq!(
         (stored.width, stored.height),
@@ -337,7 +348,8 @@ fn valid_custom_icon_wins_over_executable() {
 /// 用仓库自带的 src-tauri/icons/icon.ico，不依赖系统里的随机文件。
 #[test]
 fn ico_file_is_supported_as_custom_icon() {
-    let ico = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/icons/icon.ico");
+    let ico =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/icons/icon.ico");
     if !ico.is_file() {
         println!("跳过：找不到 {}", ico.display());
         return;
@@ -366,7 +378,11 @@ fn lnk_shortcut_is_supported() {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map(|e| e.eq_ignore_ascii_case("lnk")).unwrap_or(false) {
+            if path
+                .extension()
+                .map(|e| e.eq_ignore_ascii_case("lnk"))
+                .unwrap_or(false)
+            {
                 found = Some(path);
                 break;
             }
@@ -383,12 +399,20 @@ fn lnk_shortcut_is_supported() {
 
     match file_icon(&lnk) {
         Some(image) => {
-            println!(".lnk ({}) 图标：{}x{}", lnk.display(), image.width, image.height);
+            println!(
+                ".lnk ({}) 图标：{}x{}",
+                lnk.display(),
+                image.width,
+                image.height
+            );
             assert!(image.width > 0 && image.height > 0);
         }
         None => {
             // .lnk 指向的目标可能已被卸载：这属于环境问题，不是缺陷
-            println!("跳过：无法从 {} 解析出图标（目标可能已卸载）", lnk.display());
+            println!(
+                "跳过：无法从 {} 解析出图标（目标可能已卸载）",
+                lnk.display()
+            );
         }
     }
 }
@@ -396,7 +420,8 @@ fn lnk_shortcut_is_supported() {
 /// 端到端：把 .ico 配成自定义图标，capture 应把它规范化后落成 PNG 缓存。
 #[test]
 fn ico_custom_icon_is_normalized_into_png_cache() {
-    let ico = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/icons/icon.ico");
+    let ico =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/icons/icon.ico");
     if !ico.is_file() {
         println!("跳过：找不到 icon.ico");
         return;
@@ -405,7 +430,9 @@ fn ico_custom_icon_is_normalized_into_png_cache() {
     let env = TestEnv::new();
     let target = env.target("ico-app").with_custom_icon(Some(ico));
 
-    let path = default_icon_capture().capture(&target).expect("应能抓到 .ico 图标");
+    let path = default_icon_capture()
+        .capture(&target)
+        .expect("应能抓到 .ico 图标");
     assert_eq!(
         path,
         env.icons_dir().join("ico-app.png"),
@@ -416,10 +443,14 @@ fn ico_custom_icon_is_normalized_into_png_cache() {
     assert!(looks_like_png(&bytes), "缓存必须是 PNG 格式");
 
     let decoded = launcher_core::platform::icon::load_png_file(&path).expect("缓存应可解码");
-    println!(".ico -> PNG 缓存：{} 字节，{}x{}", bytes.len(), decoded.width, decoded.height);
+    println!(
+        ".ico -> PNG 缓存：{} 字节，{}x{}",
+        bytes.len(),
+        decoded.width,
+        decoded.height
+    );
     assert!(decoded.width <= ICON_MAX_SIZE && decoded.height <= ICON_MAX_SIZE);
 }
-
 
 /// .lnk 的正向验证：临时造一个指向 notepad.exe 的快捷方式，确认能解析出图标。
 ///
@@ -441,7 +472,6 @@ fn lnk_pointing_to_real_exe_yields_icon() {
     assert!(image.width > 0 && image.height > 0);
     assert!(!image.is_fully_transparent(), ".lnk 图标不应全透明");
 }
-
 
 // ===========================================================================
 // f) 正斜杠路径回归（实测踩出来的坑）
@@ -516,8 +546,8 @@ fn shell_icon_api_is_serialized_under_concurrency() {
         return;
     }
 
-    use std::sync::Barrier;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
 
     const THREADS: usize = 16;
     const ROUNDS: usize = 10;

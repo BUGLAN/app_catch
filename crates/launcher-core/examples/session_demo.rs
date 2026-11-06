@@ -60,7 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("会话 id    = {}", session.session_id);
     println!("子进程 pid = {}", session.handle.pid);
     println!("启动时间   = {}", session.handle.start_time);
-    println!("会话目录   = {}", manager.session_dir(&session.session_id).display());
+    println!(
+        "会话目录   = {}",
+        manager.session_dir(&session.session_id).display()
+    );
     println!();
 
     // 3.5) 可选：等若干毫秒后主动 stop，用于人工验证杀树
@@ -139,7 +142,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|n| n.starts_with("events"))
         .collect();
     files.sort();
-    println!("事件总数 = {}（跨 {} 个文件，其中 output {} 条）", lines.len(), files.len(), outputs);
+    println!(
+        "事件总数 = {}（跨 {} 个文件，其中 output {} 条）",
+        lines.len(),
+        files.len(),
+        outputs
+    );
     println!("不可解析行 = {parse_errors}");
     println!("会话目录文件 = {files:?}");
     println!();

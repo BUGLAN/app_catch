@@ -306,8 +306,7 @@ mod tests {
         else {
             return;
         };
-        let mut target = IconTarget::default();
-        target.pid = Some(pid);
+        let target = IconTarget::default().with_pid(Some(pid));
         let captured = MacIconCapture::new()
             .produce(&target)
             .expect("应取到 Finder 图标");
@@ -340,8 +339,7 @@ mod tests {
     /// 运行中进程档位：自身测试进程不在 .app 里，应退到下一档而不是报错。
     #[test]
     fn running_process_outside_bundle_yields_none() {
-        let mut target = IconTarget::default();
-        target.pid = Some(std::process::id());
+        let target = IconTarget::default().with_pid(Some(std::process::id()));
         assert!(MacIconCapture::new().produce(&target).is_none());
     }
 }

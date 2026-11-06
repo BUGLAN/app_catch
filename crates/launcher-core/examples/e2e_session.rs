@@ -69,10 +69,7 @@ mod imp {
         };
         let mut it = std::env::args().skip(1);
         while let Some(flag) = it.next() {
-            let mut value = || {
-                it.next()
-                    .ok_or_else(|| format!("参数 {flag} 缺少取值"))
-            };
+            let mut value = || it.next().ok_or_else(|| format!("参数 {flag} 缺少取值"));
             match flag.as_str() {
                 "--app-id" => args.app_id = value()?,
                 "--wait-seconds" => {
@@ -185,7 +182,10 @@ mod imp {
         let root_pid = session.handle.pid;
         let dir = manager.session_dir(&session_id);
         println!("会话 id    = {session_id}");
-        println!("根进程 pid = {root_pid}（start_time = {}）", session.handle.start_time);
+        println!(
+            "根进程 pid = {root_pid}（start_time = {}）",
+            session.handle.start_time
+        );
         println!("会话目录   = {}", dir.display());
         println!("观察时长   = {} 秒", args.wait_seconds);
         println!();
@@ -235,7 +235,10 @@ mod imp {
                         image.width,
                         image.height
                     ),
-                    None => println!("图标        = {}（{bytes} 字节，PNG 解码失败）", path.display()),
+                    None => println!(
+                        "图标        = {}（{bytes} 字节，PNG 解码失败）",
+                        path.display()
+                    ),
                 }
             }
             None => println!("图标        = 无（服务类应用无窗口，属预期）"),
@@ -258,7 +261,10 @@ mod imp {
                     .filter(|pid| pid_exists_in_snapshot(*pid))
                     .collect();
                 if remaining.is_empty() {
-                    println!("stop 后第 {} 次复查（间隔 200ms）：进程树已全部回收 {before:?}", attempt + 1);
+                    println!(
+                        "stop 后第 {} 次复查（间隔 200ms）：进程树已全部回收 {before:?}",
+                        attempt + 1
+                    );
                     break;
                 }
             }
@@ -332,7 +338,11 @@ mod imp {
             "日志文件   = {:?}",
             files
                 .iter()
-                .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+                .map(|p| p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned())
                 .collect::<Vec<_>>()
         );
         println!(
@@ -341,8 +351,14 @@ mod imp {
             outputs,
             bad
         );
-        println!("观察期采到端口 = {:?}", seen_ports.iter().copied().collect::<Vec<_>>());
-        println!("观察期采到标题 = {:?}", seen_titles.iter().cloned().collect::<Vec<_>>());
+        println!(
+            "观察期采到端口 = {:?}",
+            seen_ports.iter().copied().collect::<Vec<_>>()
+        );
+        println!(
+            "观察期采到标题 = {:?}",
+            seen_titles.iter().cloned().collect::<Vec<_>>()
+        );
 
         if !args.expect_ports.is_empty() {
             let hit: Vec<u16> = args
@@ -367,7 +383,10 @@ mod imp {
                 || first_status_with_title
                     .as_deref()
                     .is_some_and(|line| line.contains(needle.as_str()));
-            println!("期望窗口标题含 {needle:?} -> {}", if hit { "达成" } else { "未达成" });
+            println!(
+                "期望窗口标题含 {needle:?} -> {}",
+                if hit { "达成" } else { "未达成" }
+            );
         }
 
         println!();

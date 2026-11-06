@@ -28,7 +28,9 @@ mod imp {
 
     #[tokio::main]
     pub async fn main() {
-        let exe = std::env::args().nth(1).expect("用法: icon_app_demo <exe 路径>");
+        let exe = std::env::args()
+            .nth(1)
+            .expect("用法: icon_app_demo <exe 路径>");
         if std::env::var_os("APP_CATCH_HOME").is_none() {
             eprintln!("请先设置 APP_CATCH_HOME");
             std::process::exit(2);

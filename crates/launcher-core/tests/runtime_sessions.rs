@@ -63,11 +63,7 @@ impl Drop for TestEnv {
 
 /// 构造一个要执行 `cmd` 的应用配置。
 fn cmd_app(args: &[&str]) -> AppConfig {
-    let mut app = AppConfig::new(
-        AppId::new("test-app").expect("合法 id"),
-        "测试应用",
-        "cmd",
-    );
+    let mut app = AppConfig::new(AppId::new("test-app").expect("合法 id"), "测试应用", "cmd");
     app.args = args.iter().map(|s| s.to_string()).collect();
     app
 }
@@ -223,7 +219,11 @@ async fn stop_kills_long_running_process_and_marks_killed() {
 
     // 确认它真的在跑
     assert!(
-        wait_until(|| launcher_core::platform::is_process_alive(pid), Duration::from_secs(10)).await,
+        wait_until(
+            || launcher_core::platform::is_process_alive(pid),
+            Duration::from_secs(10)
+        )
+        .await,
         "进程应处于运行中"
     );
 
@@ -284,7 +284,9 @@ async fn stop_reclaims_grandchild_processes() {
         "父进程 {parent_pid} 应至少有一个子进程，用于验证杀树"
     );
     assert!(
-        descendants.iter().any(|p| launcher_core::platform::is_process_alive(*p)),
+        descendants
+            .iter()
+            .any(|p| launcher_core::platform::is_process_alive(*p)),
         "子进程应处于运行中: {descendants:?}"
     );
 
@@ -303,7 +305,10 @@ async fn stop_reclaims_grandchild_processes() {
         .copied()
         .filter(|p| launcher_core::platform::is_process_alive(*p))
         .collect();
-    assert!(survivors.is_empty(), "子孙进程应被一并回收，仍存活: {survivors:?}");
+    assert!(
+        survivors.is_empty(),
+        "子孙进程应被一并回收，仍存活: {survivors:?}"
+    );
 
     // 交叉验证：系统快照 + 进程对象两条独立证据都必须表明 pid 已消失
     println!("父 pid {parent_pid} / 子孙 {:?} 应已全部回收", descendants);
@@ -531,7 +536,10 @@ async fn high_volume_output_writes_every_line() {
         })
         .sum();
 
-    assert_eq!(overflow, 0, "channel 容量足够时不应丢行，实际丢弃 {overflow}");
+    assert_eq!(
+        overflow, 0,
+        "channel 容量足够时不应丢行，实际丢弃 {overflow}"
+    );
     assert_eq!(outputs, 5001, "5000 行 + DONE 应全部落盘，实际 {outputs}");
 
     // 行内容完整且顺序正确
@@ -552,12 +560,14 @@ async fn high_volume_output_writes_every_line() {
 #[tokio::test]
 async fn rotation_creates_shards_with_intact_lines_and_retention() {
     let env = TestEnv::new();
-    let mut capture = CaptureConfig::default();
     // 4KB 一片 + 只保留 2 片，确保小体量输出也能触发多轮轮转
-    capture.writer = LogWriterConfig {
-        max_file_bytes: 4096,
-        max_shards: 2,
-        ..LogWriterConfig::default()
+    let capture = CaptureConfig {
+        writer: LogWriterConfig {
+            max_file_bytes: 4096,
+            max_shards: 2,
+            ..LogWriterConfig::default()
+        },
+        ..CaptureConfig::default()
     };
     let manager = env.manager(capture);
 
@@ -608,7 +618,8 @@ async fn rotation_creates_shards_with_intact_lines_and_retention() {
 
     // 分片里的内容是完整的 output 行（没有被切成半行）
     for seq in &shards {
-        let text = std::fs::read_to_string(dir.join(format!("events.{seq}.jsonl"))).expect("读分片失败");
+        let text =
+            std::fs::read_to_string(dir.join(format!("events.{seq}.jsonl"))).expect("读分片失败");
         for line in text.lines() {
             let event = SessionEvent::from_jsonl_line(line).expect("分片行应为合法事件");
             if let SessionEvent::Output { line: content, .. } = event {
@@ -637,17 +648,21 @@ async fn rotation_creates_shards_with_intact_lines_and_retention() {
 #[tokio::test]
 async fn status_events_share_one_writer_with_output() {
     let env = TestEnv::new();
-    let mut capture = CaptureConfig::default();
-    // 1KB 一片 + 只留 3 片：少量输出就能触发多轮轮转
-    capture.writer = LogWriterConfig {
-        max_file_bytes: 1024,
-        max_shards: 3,
-        ..LogWriterConfig::default()
+    let capture = CaptureConfig {
+        // 1KB 一片 + 只留 3 片：少量输出就能触发多轮轮转
+        writer: LogWriterConfig {
+            max_file_bytes: 1024,
+            max_shards: 3,
+            ..LogWriterConfig::default()
+        },
+        // 10ms 采一次：状态事件会密集插进输出流里
+        status_interval: Some(Duration::from_millis(10)),
+        max_status_events: None,
+        ..CaptureConfig::default()
     };
-    // 10ms 采一次：状态事件会密集插进输出流里
-    capture.status_interval = Some(Duration::from_millis(10));
-    capture.max_status_events = None;
-    let manager = env.manager(capture).with_status_probe(Arc::new(CountingProbe));
+    let manager = env
+        .manager(capture)
+        .with_status_probe(Arc::new(CountingProbe));
 
     let app = cmd_app(&[
         "/c",
@@ -701,7 +716,9 @@ async fn status_events_share_one_writer_with_output() {
         events.last()
     );
     assert!(
-        events.iter().any(|e| matches!(e, SessionEvent::Output { .. })),
+        events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::Output { .. })),
         "保留下来的分片里应仍有 output 事件"
     );
     println!(
@@ -722,11 +739,15 @@ async fn status_events_share_one_writer_with_output() {
 #[tokio::test]
 async fn exit_does_not_wait_for_a_full_status_interval() {
     let env = TestEnv::new();
-    let mut capture = CaptureConfig::default();
-    // 采集间隔远大于允许的收尾耗时：靠 sleep 醒来的实现必然超时
-    capture.status_interval = Some(Duration::from_secs(2));
-    capture.max_status_events = None;
-    let manager = env.manager(capture).with_status_probe(Arc::new(CountingProbe));
+    let capture = CaptureConfig {
+        // 采集间隔远大于允许的收尾耗时：靠 sleep 醒来的实现必然超时
+        status_interval: Some(Duration::from_secs(2)),
+        max_status_events: None,
+        ..CaptureConfig::default()
+    };
+    let manager = env
+        .manager(capture)
+        .with_status_probe(Arc::new(CountingProbe));
 
     let app = cmd_app(&["/c", "ping -n 60 127.0.0.1 > nul"]);
     let session = manager.start(&app).await.expect("启动失败");
@@ -799,9 +820,15 @@ async fn event_stream_is_self_consistent() {
     assert!(events.len() >= 3, "至少应有 start/output/exit 三类事件");
 
     // start 必须是首条
-    assert!(matches!(events.first(), Some(SessionEvent::Start { .. })), "首条必须是 start");
+    assert!(
+        matches!(events.first(), Some(SessionEvent::Start { .. })),
+        "首条必须是 start"
+    );
     // exit 必须是末条
-    assert!(matches!(events.last(), Some(SessionEvent::Exit { .. })), "末条必须是 exit");
+    assert!(
+        matches!(events.last(), Some(SessionEvent::Exit { .. })),
+        "末条必须是 exit"
+    );
 
     // 所有事件版本号一致且为 1
     for event in &events {
@@ -913,7 +940,11 @@ async fn recover_marks_live_process_as_running() {
     let start_time = session.handle.start_time.as_raw();
 
     assert!(
-        wait_until(|| launcher_core::platform::is_process_alive(pid), Duration::from_secs(10)).await,
+        wait_until(
+            || launcher_core::platform::is_process_alive(pid),
+            Duration::from_secs(10)
+        )
+        .await,
         "进程应处于运行中"
     );
 
@@ -945,7 +976,10 @@ async fn recover_marks_live_process_as_running() {
     assert!(last_exit(&events).is_none(), "运行中的会话不应有 exit 事件");
 
     // 收尾：把这个进程停掉，避免测试结束后残留
-    manager.stop(recovered_id).await.expect("停止恢复的会话失败");
+    manager
+        .stop(recovered_id)
+        .await
+        .expect("停止恢复的会话失败");
     manager
         .stop(session.session_id)
         .await

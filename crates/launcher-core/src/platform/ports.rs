@@ -25,7 +25,7 @@
 //!
 //! 资源释放：缓冲区是 `Vec<u8>`（RAII 自动释放）；本模块不打开任何需要 CloseHandle 的内核句柄。
 
-#![allow(unsafe_code)]
+// unsafe 豁免在 platform/mod.rs 的模块声明处统一给出（便于审计），这里不再重复
 
 use core::ffi::c_void;
 
@@ -65,7 +65,7 @@ fn ipv4_is_wildcard_or_loopback(addr: u32) -> bool {
         return true;
     }
     // 小端机器上 addr 的最低字节就是网络序的第一个字节（即 127.0.0.1 的 127）
-    (addr & 0xFF) as u32 == IPV4_LOOPBACK_PREFIX
+    (addr & 0xFF) == IPV4_LOOPBACK_PREFIX
 }
 
 /// IPv6 地址是否属于「任意地址或回环」。
@@ -187,7 +187,9 @@ fn parse_v4(buffer: &[u8], pids: &[u32]) -> Vec<u16> {
         }
         // SAFETY: 已确认 [offset, offset+row_size) 落在 buffer 内且对齐要求
         // 由 MIB_TCPROW_OWNER_PID 的 repr(C) 布局满足（u32 数组本身自然对齐）。
-        let row = unsafe { core::ptr::read_unaligned(buffer.as_ptr().add(offset) as *const MIB_TCPROW_OWNER_PID) };
+        let row = unsafe {
+            core::ptr::read_unaligned(buffer.as_ptr().add(offset) as *const MIB_TCPROW_OWNER_PID)
+        };
         if let Some(port) = filter_v4(&row, pids) {
             ports.push(port);
         }
@@ -215,8 +217,9 @@ fn parse_v6(buffer: &[u8], pids: &[u32]) -> Vec<u16> {
             break;
         }
         // SAFETY: 已确认区间在 buffer 内；用 read_unaligned 避免对 u8 缓冲区做对齐假设。
-        let row =
-            unsafe { core::ptr::read_unaligned(buffer.as_ptr().add(offset) as *const MIB_TCP6ROW_OWNER_PID) };
+        let row = unsafe {
+            core::ptr::read_unaligned(buffer.as_ptr().add(offset) as *const MIB_TCP6ROW_OWNER_PID)
+        };
         if let Some(port) = filter_v6(&row, pids) {
             ports.push(port);
         }

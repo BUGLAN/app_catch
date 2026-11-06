@@ -28,21 +28,21 @@ use crate::session::SessionId;
 
 #[cfg(not(windows))]
 pub mod fallback;
+/// 图标核心：位图规范化、PNG 编解码、缓存判定（**不含平台 API**，任何平台都能单测）。
+pub mod icon;
 /// macOS 图标抓取：.app 包 → Info.plist → icns（不含 unsafe）。
 #[cfg(target_os = "macos")]
 pub mod icon_macos;
-/// Unix 进程后端：进程组杀树 + `proc_pidinfo` / `/proc` 启动时间，是允许 `unsafe` 的模块之一。
-#[cfg(unix)]
-#[allow(unsafe_code)]
-pub mod unix;
-/// 图标核心：位图规范化、PNG 编解码、缓存判定（**不含平台 API**，任何平台都能单测）。
-pub mod icon;
-/// 「项目图标」档位：从工作目录里的打包配置 / 常见路径找图标（纯文件读取，任意平台）。
-pub mod project_icon;
 /// Windows 图标抓取：窗口 HICON / exe 资源图标 -> PNG 缓存。
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub mod icon_windows;
+/// 「项目图标」档位：从工作目录里的打包配置 / 常见路径找图标（纯文件读取，任意平台）。
+pub mod project_icon;
+/// Unix 进程后端：进程组杀树 + `proc_pidinfo` / `/proc` 启动时间，是允许 `unsafe` 的模块之一。
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub mod unix;
 /// Windows 实现直接调用 Win32 API，是本 crate 允许 `unsafe` 的模块之一。
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -58,21 +58,23 @@ pub mod ports;
 #[allow(unsafe_code)]
 pub mod window;
 
+#[cfg(not(windows))]
+pub use fallback::{FallbackIconCapture, FallbackProcessBackend};
 pub use icon::{cache_path, CacheState, RgbaImage, ICON_MAX_SIZE};
+#[cfg(target_os = "macos")]
+pub use icon_macos::MacIconCapture;
 #[cfg(windows)]
 pub use icon_windows::{file_icon, window_icon_for_pids, WindowsIconCapture};
 #[cfg(windows)]
 pub use ports::{listening_ports_for_pid, listening_ports_for_pids};
+#[cfg(unix)]
+pub use unix::UnixProcessBackend;
 #[cfg(windows)]
 pub use window::{main_window_for_pids, window_title_for_pid, window_title_for_pids};
 #[cfg(windows)]
-pub use windows::{descendant_pids, is_process_alive, pid_exists_in_snapshot, WindowsProcessBackend};
-#[cfg(not(windows))]
-pub use fallback::{FallbackIconCapture, FallbackProcessBackend};
-#[cfg(unix)]
-pub use unix::UnixProcessBackend;
-#[cfg(target_os = "macos")]
-pub use icon_macos::MacIconCapture;
+pub use windows::{
+    descendant_pids, is_process_alive, pid_exists_in_snapshot, WindowsProcessBackend,
+};
 
 /// 收集一个会话进程树的全部 pid（根 pid 在前，子孙在后）。
 ///
@@ -307,7 +309,6 @@ pub trait ProcessBackend: Send + Sync {
     fn descendant_pids(&self, _handle: &ProcessHandle) -> Option<Vec<u32>> {
         None
     }
-
 }
 
 /// 图标捕获目标：应用身份 + 可执行文件 + （可能的）运行中窗口信息。
@@ -408,7 +409,9 @@ mod tests {
         let app = AppId::new("demo").expect("合法 id");
         let mut request = SpawnRequest::new(session, app.clone(), "python");
         request.args.push("main.py".to_string());
-        request.env.insert("PYTHONUNBUFFERED".to_string(), "1".to_string());
+        request
+            .env
+            .insert("PYTHONUNBUFFERED".to_string(), "1".to_string());
 
         assert_eq!(request.session_id, session);
         assert_eq!(request.app_id, app);
@@ -445,10 +448,8 @@ mod tests {
 
     #[test]
     fn spawned_process_debug_does_not_leak_pipe_details() {
-        let spawned = SpawnedProcess::without_pipes(ProcessHandle::new(
-            7,
-            ProcessStartTime::from_raw(9),
-        ));
+        let spawned =
+            SpawnedProcess::without_pipes(ProcessHandle::new(7, ProcessStartTime::from_raw(9)));
         let text = format!("{spawned:?}");
         assert!(text.contains("has_stdout: false"), "{text}");
         assert!(text.contains("has_stderr: false"), "{text}");
@@ -457,7 +458,10 @@ mod tests {
     #[test]
     fn icon_target_from_executable_has_no_pid() {
         let target = IconTarget::from_executable("C:/Windows/notepad.exe");
-        assert_eq!(target.executable, Some(PathBuf::from("C:/Windows/notepad.exe")));
+        assert_eq!(
+            target.executable,
+            Some(PathBuf::from("C:/Windows/notepad.exe"))
+        );
         assert_eq!(target.pid, None);
         assert_eq!(target.app_id, None, "未指定应用时不该有缓存身份");
         assert_eq!(
@@ -543,7 +547,10 @@ mod tests {
 
             let exit = backend.wait(&spawned.handle).await.expect("等待退出失败");
             assert_eq!(exit.code, Some(0), "cmd.exe 无参数应正常退出");
-            assert!(!backend.is_running(&spawned.handle).await.expect("查询状态失败"));
+            assert!(!backend
+                .is_running(&spawned.handle)
+                .await
+                .expect("查询状态失败"));
         });
     }
 }
