@@ -20,7 +20,7 @@
 | `src-tauri/` | Tauri 2 壳层：命令注册与薄封装、DTO、事件分片读取。 |
 | `src/` | 前端（React + TypeScript + Vite），纯 CSS，无 UI 库。 |
 | `docs/` | 配置、会话格式、运行时、界面、图标五份规范文档。 |
-| `scripts/` | 会话目录复原、CDP 驱动安装版 GUI、应用图标生成、发布清单合并、dev 启动器。 |
+| `scripts/` | 会话目录复原、CDP 驱动安装版 GUI、应用图标生成、发布清单合并、dev 启动器、macOS 签名证书生成。 |
 | `.github/workflows/` | `ci.yml`（lint / 测试 + clippy / main 与 PR 上打包）与 `release.yml`（tag 触发打包发布）。 |
 | `Cargo.toml` | cargo workspace 根，公共依赖在 `[workspace.dependencies]`。 |
 
@@ -63,7 +63,7 @@ pnpm tauri build
 
 ## 发布
 
-推送 `v*.*.*` tag 触发 `release.yml`：矩阵打包 → 签名更新产物 → 创建 GitHub Release → 上传安装包与合并后的 `latest.json`。需在仓库配置 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个 secret；`package.json`、`tauri.conf.json`、workspace `Cargo.toml` 三处版本号需一致（由测试守护）。
+推送 `v*.*.*` tag 触发 `release.yml`：矩阵打包 → 签名更新产物 → 创建 GitHub Release → 上传安装包与合并后的 `latest.json`。需在仓库配置 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个 secret；macOS 产物另用 `MACOS_SIGNING_CERT_P12` / `MACOS_SIGNING_CERT_PASSWORD` 做固定证书签名，让用户的隐私授权在升级后保留（证书由 `scripts/gen-macos-signing-cert.sh` 生成，未配置时退回 ad-hoc 签名，见 [docs/MACOS_PERMISSIONS.md](docs/MACOS_PERMISSIONS.md)）；`package.json`、`tauri.conf.json`、workspace `Cargo.toml` 三处版本号需一致（由测试守护）。
 
 ## 文档
 
@@ -74,6 +74,7 @@ pnpm tauri build
 | [docs/RUNTIME.md](docs/RUNTIME.md) | 运行时：生命周期状态机、`SessionManager` API、退出分类、各平台进程后端 |
 | [docs/GUI.md](docs/GUI.md) | 界面结构、命令层 API、推送与兜底轮询、分片读取 |
 | [docs/ICONS.md](docs/ICONS.md) | 图标优先级链、PNG 规范、缓存失效、兜底语义 |
+| [docs/MACOS_PERMISSIONS.md](docs/MACOS_PERMISSIONS.md) | macOS 隐私权限的责任进程、Info.plist 用途声明、自签名证书与授权排查 |
 
 ## 测试
 
