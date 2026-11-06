@@ -17,6 +17,7 @@
  */
 import type { AppConfig, SessionSnapshot } from "../lib/types";
 import { runStateLabel } from "../lib/logModel";
+import { aggregateState } from "../lib/sessions";
 import type { RunState } from "../lib/types";
 import { AppIcon } from "./AppIcon";
 import { NEW_APP_SHORTCUT } from "./Titlebar";
@@ -28,32 +29,12 @@ interface Props {
   sessions: SessionSnapshot[];
   selectedId: string | null;
   onSelect: (app: AppConfig) => void;
-  /** 图标刷新触发器：会话启动后 +1，让列表重新抓运行时图标。 */
-  iconRefresh?: number;
-  /** 刷新时是否强制穿透缓存（会话刚启动那一次为真）。 */
-  iconForceRefresh?: boolean;
+  /** 每个应用的图标版本（会话启动后只有那一个应用的版本会变），见 AppIcon 的 `version`。 */
+  iconVersions?: Readonly<Record<string, number>>;
   /** 首屏加载中：渲染骨架而不是「暂无应用」。 */
   loading?: boolean;
   /** 抽屉是否折叠：折叠时只显示图标并启用 tooltip。 */
   collapsed?: boolean;
-}
-
-/** 一个应用的综合状态：有 running 会话即运行中，否则看最近一次退出结果。 */
-export function aggregateState(
-  appId: string,
-  sessions: SessionSnapshot[]
-): RunState | "idle" {
-  const own = sessions.filter((session) => session.app_id === appId);
-  if (own.some((session) => session.state === "running")) {
-    return "running";
-  }
-  if (own.some((session) => session.state === "crashed")) {
-    return "crashed";
-  }
-  if (own.length > 0) {
-    return "exited";
-  }
-  return "idle";
 }
 
 const STATE_LABEL: Record<RunState | "idle", string> = {
@@ -68,8 +49,7 @@ export function AppList({
   sessions,
   selectedId,
   onSelect,
-  iconRefresh = 0,
-  iconForceRefresh = false,
+  iconVersions = {},
   loading = false,
   collapsed = false,
 }: Props) {
@@ -112,8 +92,7 @@ export function AppList({
                   <AppIcon
                     appId={app.id}
                     name={app.name}
-                    refreshKey={iconRefresh}
-                    forceRefresh={iconForceRefresh}
+                    version={iconVersions[app.id] ?? 0}
                   />
                   {/* 侧栏唯一的状态信号：只有运行中 / 崩溃才出点 */}
                   {(state === "running" || state === "crashed") && (

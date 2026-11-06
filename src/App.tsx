@@ -1,21 +1,21 @@
 /**
  * app_catch 主界面：自绘标题栏 + 左侧抽屉 + 右侧详情/会话。
  *
- * 状态管理刻意只用一个 useState 承载「数据 + 选中态」，
- * 轮询逻辑集中在 effect 里，组件本身只负责渲染。
+ * 数据刷新：会话列表由后端推送（`sessions:changed`）驱动，低频轮询只做兜底；
+ * 列表包含运行中的会话与每个应用最近退出的几个，进程退出后日志面板不会消失。
  *
- * 本轮改动只碰表现层与窗口外壳：
- *   所有命令调用、轮询节奏、选中规则、表单载荷完全保持原样。
+ * 进行中的操作按应用 / 按会话记录（startingApps / stoppingSessions），
+ * 启动一个应用不会把整个界面锁住；只有保存 / 删除配置（saving）是全局的。
  *
- * 新增的三件事：
- *   1. 自绘标题栏（Titlebar）替代原来的 .topbar，移除系统窗口边框；
- *   2. 左侧抽屉（Sidebar）可折叠、可拖拽调宽，状态持久化；
- *   3. 标题栏全局搜索：按名称 / 标签 / id 过滤左侧列表。
+ * 外壳：自绘标题栏 + 可折叠抽屉 + 标题栏全局搜索（按名称 / 标签 / id 过滤左侧列表）。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { api, isNotHosted, toCommandError } from "./lib/api";
-import { invalidateIcon } from "./lib/iconModel";
+import { api, isNotHosted, sessionEvents, toCommandError } from "./lib/api";
+import { recaptureIcon } from "./lib/iconModel";
+import { pollInterval } from "./lib/logModel";
+import { createPoller } from "./lib/poller";
+import { pickDefaultSession, upsertSession } from "./lib/sessions";
 import type {
   AppConfig,
   AppConfigInput,
@@ -56,6 +56,17 @@ const RUNTIME_ICON_DELAY_MS = 1500;
 /** 同时显示的 toast 上限：再多会盖住界面。 */
 const MAX_TOASTS = 3;
 
+/** 返回加入 / 移除一个 key 后的新集合（state 里的集合必须整体替换）。 */
+function toggled(set: ReadonlySet<string>, key: string, on: boolean): ReadonlySet<string> {
+  const next = new Set(set);
+  if (on) {
+    next.add(key);
+  } else {
+    next.delete(key);
+  }
+  return next;
+}
+
 /** 表单的编辑目标：新建（null）或已有应用。 */
 type FormTarget = AppConfig | null;
 
@@ -77,20 +88,20 @@ export default function App() {
   /** 启动静默检查发现的新版本：进设置页直接展示，消费后清空。 */
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
-  const [busy, setBusy] = useState(false);
+  /** 应用配置正在保存 / 删除：表单与删除确认框随之禁用（全局，一次只编辑一个应用）。 */
+  const [saving, setSaving] = useState(false);
+  /** 启动 / 重启请求进行中的应用 id。 */
+  const [startingApps, setStartingApps] = useState<ReadonlySet<string>>(() => new Set());
+  /** 停止请求进行中的会话 id。 */
+  const [stoppingSessions, setStoppingSessions] = useState<ReadonlySet<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [boot, setBoot] = useState<BootReport | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  /** 图标刷新触发器：会话启动后 +1，让列表与详情重新抓「运行时图标」。 */
-  const [iconRefresh, setIconRefresh] = useState(0);
   /**
-   * 本次刷新是否要穿透缓存。
-   *
-   * 只有「会话刚启动」那一次是 true：那一刻窗口才出现，窗口档位第一次可能拿到
-   * 应用自设的真图标，必须能覆盖磁盘上早先抓到的 `pnpm.cmd` 通用图标。
-   * 其余刷新保持 false，避免每次点启动都白跑一遍 Shell API。
+   * 每个应用的图标版本：会话启动后对**那一个应用**强制重抓（recaptureIcon），再递增它的版本，
+   * 让列表与详情里它的图标从缓存重新取。其他应用的图标不受影响。
    */
-  const [iconForceRefresh, setIconForceRefresh] = useState(false);
+  const [iconVersions, setIconVersions] = useState<Readonly<Record<string, number>>>({});
 
   const theme = useTheme();
   const rail = useSidebar();
@@ -144,7 +155,20 @@ export default function App() {
     [pushToast]
   );
 
-  /** 拉取应用列表与活跃会话。 */
+  // 兜底轮询间隔读的是运行中会话数，但绝不能让调度依赖 sessions：
+  // 那样每次刷新写回 sessions 都会重建调度器，形成自我触发的循环。
+  const runningCountRef = useRef(0);
+
+  /** 拉取会话列表（运行中 + 最近退出的）。 */
+  const refreshSessions = useCallback(async () => {
+    const list = await run(() => api.listSessions());
+    if (list) {
+      runningCountRef.current = list.filter((s) => s.state === "running").length;
+      setSessions(list);
+    }
+  }, [run]);
+
+  /** 拉取应用列表与会话。 */
   const refresh = useCallback(async () => {
     const list = await run(() => api.listApps());
     if (list) {
@@ -156,11 +180,8 @@ export default function App() {
         return list.length > 0 ? list[0]!.id : null;
       });
     }
-    const active = await run(() => api.listActiveSessions());
-    if (active) {
-      setSessions(active);
-    }
-  }, [run]);
+    await refreshSessions();
+  }, [refreshSessions, run]);
 
   // 首屏：恢复残留会话 + 拉列表
   useEffect(() => {
@@ -205,38 +226,31 @@ export default function App() {
     };
   }, [hosted, pushToast]);
 
-  // 轮询间隔读的是运行中会话数，但绝不能让 effect 依赖 sessions：
-  // 那样每次轮询写回 sessions 都会重跑 effect、重置定时器，形成自我触发的循环。
-  const runningCountRef = useRef(0);
-
-  // 会话列表轮询：运行中 1s，全部退出后放慢到 3s
+  /*
+   * 会话列表刷新：后端推送 `sessions:changed` 时立刻刷新；轮询只兜底（漏事件 / 非宿主环境）。
+   * 首轮由上面的首屏 effect 负责，这里的兜底从一个间隔之后开始。
+   */
   useEffect(() => {
-    let timer: number | undefined;
-    let cancelled = false;
-
-    const tick = async () => {
-      if (document.visibilityState === "visible") {
-        const active = await run(() => api.listActiveSessions());
-        if (!cancelled && active) {
-          runningCountRef.current = active.filter((s) => s.state === "running").length;
-          setSessions(active);
-        }
+    const isVisible = () => document.visibilityState === "visible";
+    const poller = createPoller({
+      run: refreshSessions,
+      interval: () => pollInterval(runningCountRef.current),
+      isVisible,
+      initialDelay: pollInterval(runningCountRef.current),
+    });
+    const unsubscribe = sessionEvents.onSessionsChanged(() => poller.kick());
+    const onVisible = () => {
+      if (isVisible()) {
+        poller.kick();
       }
-      if (cancelled) {
-        return;
-      }
-      const running = runningCountRef.current;
-      timer = window.setTimeout(tick, running > 0 ? 1000 : 3000);
     };
-
-    timer = window.setTimeout(tick, 1000);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      cancelled = true;
-      if (timer !== undefined) {
-        window.clearTimeout(timer);
-      }
+      poller.stop();
+      document.removeEventListener("visibilitychange", onVisible);
+      void unsubscribe.then((off) => off());
     };
-  }, [run]);
+  }, [refreshSessions]);
 
   /** 搜索过滤后的列表（只影响显示，不动原始数据与选中规则）。 */
   const visibleApps = useMemo(() => filterApps(apps, query), [apps, query]);
@@ -258,73 +272,76 @@ export default function App() {
     [appSessions, selectedSession]
   );
 
-  // 选中的应用变了：默认选中它的第一个活跃会话
+  // 选中的应用或它的会话列表变了：保持当前选中；选中项不在了就选默认会话
+  // （最近启动的运行中会话，都退出了就选最近的那个——崩溃后界面停在它的日志上）
   useEffect(() => {
     setSelectedSession((current) => {
       if (current && appSessions.some((session) => session.session_id === current)) {
         return current;
       }
-      return appSessions.length > 0 ? appSessions[0]!.session_id : null;
+      return pickDefaultSession(appSessions);
     });
   }, [appSessions]);
 
+  /**
+   * 会话起来后窗口才存在：此刻才可能抓到基线说的「运行时真图标」。
+   * 延迟一拍再抓，给窗口创建留出时间；只重抓这一个应用，抓不到也无所谓（静默兜底）。
+   */
+  const scheduleIconRecapture = useCallback((appId: string) => {
+    window.setTimeout(() => {
+      void recaptureIcon(appId).then(() => {
+        setIconVersions((prev) => ({ ...prev, [appId]: (prev[appId] ?? 0) + 1 }));
+      });
+    }, RUNTIME_ICON_DELAY_MS);
+  }, []);
+
   const handleStart = useCallback(
     async (app: AppConfig) => {
-      setBusy(true);
+      setStartingApps((prev) => toggled(prev, app.id, true));
       const snapshot = await run(() => api.startApp(app.id));
-      setBusy(false);
+      setStartingApps((prev) => toggled(prev, app.id, false));
       if (snapshot) {
-        setSessions((prev) => prev.concat(snapshot));
+        setSessions((prev) => upsertSession(prev, snapshot));
         setSelectedId(app.id);
         setSelectedSession(snapshot.session_id);
-
-        // 会话起来后窗口才存在：此刻才可能抓到基线说的「运行时真图标」。
-        // 延迟一拍再抓，给窗口创建留出时间（抓不到也无所谓，静默兜底）。
-        invalidateIcon(app.id);
-        window.setTimeout(() => {
-          // 强制穿透磁盘缓存：此刻窗口已存在，窗口档位才有可能抓到真图标
-          setIconForceRefresh(true);
-          setIconRefresh((value) => value + 1);
-        }, RUNTIME_ICON_DELAY_MS);
+        scheduleIconRecapture(app.id);
       }
     },
-    [run]
+    [run, scheduleIconRecapture]
   );
 
   const handleStop = useCallback(
     async (sessionId: string) => {
-      setBusy(true);
+      setStoppingSessions((prev) => toggled(prev, sessionId, true));
       const done = await run(() => api.stopSession(sessionId));
-      setBusy(false);
+      setStoppingSessions((prev) => toggled(prev, sessionId, false));
       if (done !== undefined) {
-        // 停止后立刻刷新一次，让状态徽标马上回落到「已退出」
-        const active = await run(() => api.listActiveSessions());
-        if (active) {
-          setSessions(active);
-        }
+        // 停止后立刻刷新一次，让状态徽标马上回落（推送随后也会到，这里只是不等它）
+        await refreshSessions();
       }
     },
-    [run]
+    [refreshSessions, run]
   );
 
   const handleRestart = useCallback(
     async (sessionId: string, appId: string) => {
-      setBusy(true);
+      setStartingApps((prev) => toggled(prev, appId, true));
       const snapshot = await run(() => api.restartSession(sessionId, appId));
-      setBusy(false);
+      setStartingApps((prev) => toggled(prev, appId, false));
       if (snapshot) {
-        setSessions((prev) => prev.concat(snapshot));
+        setSessions((prev) => upsertSession(prev, snapshot));
         setSelectedSession(snapshot.session_id);
+        scheduleIconRecapture(appId);
       }
     },
-    [run]
+    [run, scheduleIconRecapture]
   );
 
   const handleSave = useCallback(
     async (input: AppConfigInput, isNew: boolean) => {
-      setBusy(true);
+      setSaving(true);
       const saved = await run(() => (isNew ? api.createApp(input) : api.updateApp(input)));
-      setBusy(false);
+      setSaving(false);
       if (saved) {
         await refresh();
         setSelectedId(saved.id);
@@ -342,9 +359,9 @@ export default function App() {
     if (!deleteTarget) {
       return;
     }
-    setBusy(true);
+    setSaving(true);
     const done = await run(() => api.deleteApp(deleteTarget.app.id));
-    setBusy(false);
+    setSaving(false);
     setDeleteTarget(null);
     if (done !== undefined) {
       await refresh();
@@ -380,7 +397,7 @@ export default function App() {
       if (!primary || event.shiftKey || event.altKey || event.key.toLowerCase() !== "n") {
         return;
       }
-      if (deleteTarget || busy) {
+      if (deleteTarget || saving) {
         return;
       }
       event.preventDefault();
@@ -388,7 +405,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, deleteTarget, openForm]);
+  }, [saving, deleteTarget, openForm]);
 
   /** 删除确认弹窗的存在态：关闭后再保留一拍，让退场动画播完。 */
   const dialogPresence = usePresence(deleteTarget);
@@ -434,7 +451,7 @@ export default function App() {
       <AppForm
         key={formTarget?.id ?? "__new__"}
         initial={formTarget ?? null}
-        busy={busy}
+        busy={saving}
         onSubmit={handleSave}
         onCancel={closeForm}
       />
@@ -448,24 +465,21 @@ export default function App() {
           app={selectedApp}
           sessions={appSessions}
           selectedSession={activeSession?.session_id ?? null}
-          busy={busy}
+          starting={startingApps.has(selectedApp.id)}
+          stoppingIds={stoppingSessions}
+          saving={saving}
           onStart={() => handleStart(selectedApp)}
           onStop={handleStop}
           onRestart={handleRestart}
           onEdit={() => openForm(selectedApp)}
           onDelete={() => setDeleteTarget({ app: selectedApp })}
           onSelectSession={setSelectedSession}
-          iconRefresh={iconRefresh}
-          iconForceRefresh={iconForceRefresh}
+          iconVersion={iconVersions[selectedApp.id] ?? 0}
         />
         {activeSession ? (
-          <SessionDetail
-            key={activeSession.session_id}
-            session={activeSession}
-            allSessions={sessions}
-          />
+          <SessionDetail key={activeSession.session_id} session={activeSession} />
         ) : (
-          <div className="empty-panel">该应用当前没有运行中的会话。</div>
+          <div className="empty-panel">该应用还没有会话。点「启动」开始捕获输出。</div>
         )}
       </div>
     );
@@ -515,8 +529,7 @@ export default function App() {
           setFormTarget(undefined);
           setSettingsOpen(false);
         }}
-        iconRefresh={iconRefresh}
-        iconForceRefresh={iconForceRefresh}
+        iconVersions={iconVersions}
         collapsed={compactRail}
       />
     );
@@ -536,7 +549,7 @@ export default function App() {
         onQueryChange={setQuery}
         matchCount={query.trim().length > 0 ? visibleApps.length : null}
         onNewApp={() => openForm(null)}
-        busy={busy}
+        busy={saving}
         onWindowError={(error) => pushToast(error.message)}
       />
 
@@ -584,7 +597,7 @@ export default function App() {
                 type="button"
                 className="btn btn-danger"
                 onClick={handleDelete}
-                disabled={busy}
+                disabled={saving}
               >
                 确认删除
               </button>

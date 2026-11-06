@@ -128,23 +128,6 @@ export interface CommandError {
   message: string;
 }
 
-/** 日志写入配置。 */
-export interface WriterConfig {
-  max_file_bytes: number;
-  max_shards: number;
-  flush_every: number;
-  flush_interval_ms: number;
-}
-
-/** 捕获配置。 */
-export interface CaptureConfig {
-  channel_capacity: number;
-  max_line_bytes: number;
-  status_interval_ms: number | null;
-  max_status_events: number | null;
-  writer: WriterConfig;
-}
-
 /** 启动期恢复报告。 */
 export interface BootReport {
   home: string;

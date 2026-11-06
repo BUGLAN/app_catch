@@ -1,4 +1,4 @@
-# 界面结构、命令层 API 与轮询策略
+# 界面结构、命令层 API 与刷新策略
 
 界面分左侧应用列表、右侧应用详情与会话详情，支持新建/编辑/删除应用、启动/停止/重启会话，会话输出以实时日志流呈现。
 
@@ -26,7 +26,7 @@
 │              │  名称 / id / 启动命令 / 工作目录 / 环境变量 / 标签          │
 │ ┌──────────┐ │  [启动][停止][重启][编辑][删除]                            │
 │ │ 名称     │ │ ───────────────────────────────────────────────────────── │
-│ │ 标签     │ │ 活跃会话表：会话 / PID / 状态 / 启动时间 / 退出            │
+│ │ 标签     │ │ 会话表：会话 / PID / 状态 / 启动时间 / 退出                │
 │ │ ▫状态    │ │ ───────────────────────────────────────────────────────── │
 │ └──────────┘ │ 会话详情                                                  │
 │  (56–320px)  │  状态条：会话id PID 状态 启动时间 窗口标题 端口 退出        │
@@ -52,11 +52,12 @@
 | 图标 | 真实图标（30×30）：由 `AppIcon` 组件渲染，数据来自 `get_app_icon` 命令的 data URL；抓不到时用内置默认图；连默认图都取不到（非 Tauri 环境）才退回名称首字块（`initialOf`）。详见 [ICONS.md](ICONS.md) |
 | 名称 | 超长省略，hover 显示完整名称 |
 | 标签 | 最多显示 3 个；无标签显示虚线「无标签」 |
-| 状态徽标 | `未运行` / `运行中`（多实例显示 ×N）/ `已退出` / `已崩溃`，由该应用的活跃会话聚合得出 |
+| 状态徽标 | `未运行` / `运行中`（多实例显示 ×N）/ `已退出` / `已崩溃`，由该应用的会话聚合得出 |
 | 「启动」按钮 | 默认隐藏（`opacity:0` + `pointer-events:none`，避免误触）；hover 或键盘聚焦时**原地替换**状态徽标，不改变行宽；点击不切换选中项（`stopPropagation`）。触屏（`hover: none`）下常显 |
 
-状态聚合规则（`aggregateState`）：有 running 会话 → 运行中；否则有 crashed → 已崩溃；
-否则有任何会话 → 已退出；否则 → 未运行。
+状态聚合规则（`aggregateState`，`src/lib/sessions.ts`）：有 running 会话 → 运行中；
+否则取**最近一次**会话的结果（已退出 / 已崩溃）；没有会话 → 未运行。
+只看最近一次：更早的会话崩溃过、但最近一次正常退出时，应用不会一直挂着「已崩溃」。
 
 ### 1.2 应用详情
 
@@ -69,7 +70,7 @@
 | --- | --- |
 | 启动 | 调 `start_app`，立刻把返回的快照插入会话表并选中 |
 | 停止 | 停「最近启动的运行中会话」；无运行中会话时禁用 |
-| 重启 | 对选中会话（无选中则取第一个）调 `restart_session` → 新 session_id |
+| 重启 | 对选中会话（无选中则取最近启动的）调 `restart_session` → 新 session_id |
 | 编辑 / 删除 | 打开表单 / 二次确认弹窗 |
 
 **多实例**：同一应用可同时有多个会话。会话表逐行列出，每行都有独立的「停止」按钮；
@@ -119,7 +120,9 @@ hover 提示「该行原始字节既不是合法 UTF-8 也无法按 GBK 解码�
 **日志搜索**：工具栏搜索框，⌘F / Ctrl+F 聚焦（WebView 没有可依赖的原生页内查找）。
 不区分大小写的纯子串匹配（不支持正则），命中高亮并显示「当前 / 总数」；Enter / Shift+Enter
 在命中间跳转，Esc 清空；「只看匹配行」可把日志过滤成命中行。界面不替用户判断哪行是错误，
-要找错误就搜 `error`。搜索范围是内存里最近 4000 行；更早的输出看会话的 JSONL 文件。
+要找错误就搜 `error`。搜索范围是内存里最近 20000 行（`MAX_LOG_ROWS`）；更早的输出看会话的 JSONL 文件。
+
+**虚拟滚动**：日志视图只渲染视口附近的行（`useVirtualRows` + `src/lib/virtualList.ts`），行高按真实测量缓存、未渲染的行用平均高度估计，窗口宽度变化时重新测量。行数多少不影响滚动与追加的流畅度。
 
 **右键菜单**：全局屏蔽 WebView 原生右键菜单（检查元素、重新加载等），只有可编辑的文本控件保留，
 方便剪切 / 复制 / 粘贴。逻辑在 `src/lib/contextMenu.ts`。
@@ -132,7 +135,7 @@ hover 提示「该行原始字节既不是合法 UTF-8 也无法按 GBK 解码�
 | 场景 | 表现 |
 | --- | --- |
 | 没有任何应用 | 主区显示引导：「app_catch 不做自动发现，应用需要手动录入」+ 新建按钮 |
-| 应用无会话 | 「该应用当前没有运行中的会话。」 |
+| 应用无会话 | 「该应用还没有会话。点「启动」开始捕获输出。」 |
 | 命令报错 | 右上角 toast，3.5 秒自动消失，可手动关闭；文案是 Rust 侧给出的中文 |
 | 非 Tauri 环境 | 提示「请在 Tauri 窗口中使用（pnpm tauri dev）」而不是白屏 |
 | 旧会话（重启启动器后） | 顶部黄色横幅说明「日志来自已落盘文件，无法再接管进程」 |
@@ -167,9 +170,10 @@ hover 提示「该行原始字节既不是合法 UTF-8 也无法按 GBK 解码�
 | 命令 | 参数 | 返回 | 说明 |
 | --- | --- | --- | --- |
 | `start_app` | `id: string` | `SessionSnapshot` | 每次启动生成新 session_id，允许多实例 |
-| `stop_session` | `sessionId: string` | `null` | 回收整棵进程树；未知会话 → `not_found` |
+| `stop_session` | `sessionId: string` | `null` | 回收整棵进程树；已退出的会话直接成功（幂等）；未知会话 → `not_found` |
 | `restart_session` | `sessionId: string, appId: string` | `SessionSnapshot` | 先停旧会话再起新会话 |
-| `list_active_sessions` | — | `SessionSnapshot[]` | 只含 `state === "running"` 的会话 |
+| `list_sessions` | — | `SessionSnapshot[]` | 运行中的全部 + 每个应用最近退出的 5 个，按启动先后排序。**界面用这个** |
+| `list_active_sessions` | — | `SessionSnapshot[]` | 只含 `state === "running"` 的会话，按启动先后排序 |
 | `get_session_status` | `sessionId: string` | `SessionSnapshot` | 未知会话 → `not_found` |
 
 `SessionSnapshot`：
@@ -203,12 +207,13 @@ hover 提示「该行原始字节既不是合法 UTF-8 也无法按 GBK 解码�
 
 `maxLines` 传 0 用默认 500；硬上限 5000。
 
-### 2.4 捕获配置与启动恢复
+### 2.4 启动恢复
+
+捕获参数（channel 容量、分片大小与数量、状态采集间隔等）不对界面开放，统一使用
+`launcher-core` 的 `CaptureConfig::default()`；会话管理器在启动时构造一次，之后不再替换。
 
 | 命令 | 参数 | 返回 | 说明 |
 | --- | --- | --- | --- |
-| `get_capture_config` | — | `CaptureConfig` | 时长字段以毫秒为单位 |
-| `set_capture_config` | `config: CaptureConfig` | `CaptureConfig` | **有会话在跑时返回 `conflict`**：重建管理器会丢掉会话表 |
 | `recover_sessions` | — | `BootReport` | `{ home, recovered[], error }`，启动期恢复残留会话 |
 | `core_version` / `app_version` | — | `string` | 链路自检，保留兼容 |
 
@@ -228,22 +233,38 @@ hover 提示「该行原始字节既不是合法 UTF-8 也无法按 GBK 解码�
 
 **会话恢复不在 setup 里**：`recover_sessions` 是异步的（要枚举进程表、可能重关联子进程），
 改成由前端首屏调用，恢复慢也不会拖住窗口显示。恢复结果通过 `BootReport` 返回，
-其中 `recovered` 里的会话会自然出现在后续的 `list_active_sessions` 中。
+其中仍在运行、被重新接管的会话会自然出现在后续的 `list_sessions` 中；恢复时发现早已消失的旧会话不进列表（退出原因无从得知，列出来只会把应用误标成「已崩溃」）。
 
 首次运行 **不会** 自动创建示例应用——基线要求「纯手动录入」，前端给空状态引导。
 
-## 3. 轮询策略
+## 3. 刷新策略：推送为主，轮询兜底
+
+后端在会话变化时推送事件（`src-tauri/src/notices.rs`），前端收到后才去取数据：
+
+| 事件 | 载荷 | 触发时机 | 前端动作 |
+| --- | --- | --- | --- |
+| `sessions:changed` | `{ session_ids: string[] \| null }` | 会话启动 / 退出 / 重关联，窗口标题或端口变化 | `App.tsx` 重拉 `list_sessions`；`useSessionLog` 刷新该会话快照并读日志 |
+| `session:log-appended` | 同上 | 写盘任务写完一批事件（此时数据已对读者可见） | `useSessionLog` 增量读日志 |
+
+- 事件只说「哪些会话变了」，不带数据；`session_ids: null` 表示通知有积压丢失，所有会话都可能变了；
+- 后端按 50 ms 窗口合并通知，输出很多的进程也只会让前端每秒收到约 20 次事件；
+- 核心层的通知来自 `SessionManager::subscribe`（见 [RUNTIME.md](RUNTIME.md)），写盘任务只在**排空队列时**通知一次。
+
+兜底轮询只防漏事件（以及浏览器预览里没有宿主的情况）：
 
 | 项目 | 值 | 位置 |
 | --- | --- | --- |
-| 日志增量 | 1000 ms（有运行中会话）/ 3000 ms（全部退出） | `useSessionLog` + `pollInterval` |
-| 会话列表 | 1000 ms / 3000 ms | `App.tsx` |
-| 页面隐藏 | `document.visibilityState !== "visible"` 时完全暂停（不读日志也不查状态） | 两处轮询都有判断 |
+| 兜底间隔 | 5000 ms（有运行中会话）/ 15000 ms（全部退出） | `pollInterval`（`logModel.ts`） |
+| 页面隐藏 | `document.visibilityState !== "visible"` 时跳过；重新可见时立刻补一轮 | `createPoller`（`poller.ts`） |
 | 单轮最多连读 | 5 页（`MAX_PAGES_PER_TICK`），防止一次 tick 占住主线程 | `useSessionLog` |
 | 单页条数 | 500（`PAGE_LINES`） | `logModel` |
 
-调度用 **递归 setTimeout** 而不是 setInterval：一次请求可能比间隔更慢，
-setInterval 会堆积请求；递归调度保证「上一轮结束才开始下一轮」。
+调度统一交给 `createPoller`：**同一时刻最多一轮**，推送在读取途中到达时合并成「读完再补一轮」，
+增量游标绝不会被两轮同时推进；每轮结束后才排下一轮（递归 setTimeout），慢请求不会堆积。
+
+**命令的线程**：Tauri 2 里不带 `async` 的命令跑在主线程上。碰磁盘的命令都标了
+`#[tauri::command(async)]` 或本身是 `async`，`read_session_events` 还放进了 `spawn_blocking`，
+读日志不会让窗口拖动 / 缩放卡顿。
 
 ## 4. read_session_events 的分片合并与边写边读
 
@@ -295,15 +316,19 @@ src/
     api.ts                     invoke 唯一出口：错误归一 + 非宿主降级
     logModel.ts                纯逻辑：事件->日志行、游标推进、自动滚底、格式化
     logModel.test.ts           纯逻辑单测
-    iconModel.ts               图标会话内缓存 + 并发合并 + 失败静默降级
+    sessions.ts                会话列表纯逻辑：默认选中、合并、状态聚合、推送事件匹配
+    poller.ts                  可「踢一下」的兜底轮询器（推送触发 + 低频兜底，绝不并发）
+    virtualList.ts             虚拟滚动的偏移 / 可见区间 / 定位计算
+    iconModel.ts               图标会话内缓存 + 并发合并 + 失败静默降级 + 单应用强制重抓
     iconModel.test.ts          缓存单测
     styleContract.test.ts      「样式契约」测试（token / 交互态 / a11y 约束）
   hooks/
-    useSessionLog.ts           轮询 hook：增量游标 + 状态刷新 + 隐藏暂停
+    useSessionLog.ts           会话日志 hook：推送驱动的增量读取 + 状态刷新 + 兜底轮询
+    useVirtualRows.ts          变高行虚拟滚动：测量缓存 + 估计 + 宽度变化重测
   components/
     AppIcon.tsx                图标：有图用图 / 无图用默认图 / 再退回首字块
-    AppList.tsx                左侧列表（状态聚合、hover 启动；选择按钮与启动按钮同级）
-    AppDetail.tsx              应用详情 + 活跃会话表
+    AppList.tsx                左侧列表（状态聚合、运行中 / 崩溃小圆点）
+    AppDetail.tsx              应用详情 + 会话表（运行中 + 最近退出的）
     AppForm.tsx                新建/编辑表单 + 纯函数导出（parseArgs/parseEnv/validateAppId）
     AppForm.test.ts            表单解析与校验单测
     SessionDetail.tsx          状态条 + 日志流 + 事件列表
@@ -337,9 +362,8 @@ src/
 3. **分片被裁剪后行号会前移**：`max_shards` 默认 5，长跑会话的旧分片会被删除，
    全局行号不再从 0 开始连续。读取器能检测到（返回更小的 `next_line`），
    界面标记「日志分片已被裁剪」，但已被删除的内容无法挽回。
-4. **修改捕获配置需要先停掉所有会话**：管理器重建会丢弃内存会话表。
-   这是刻意选择——否则那些进程会既停不掉也查不到。
-5. **无虚拟滚动**：日志最多保留 4000 行（`MAX_LOG_ROWS`），超出丢弃最旧的。
-   更长的历史请用「最近事件」或直接读 JSONL 文件。
+4. **界面只保留最近的日志**：内存里最多 20000 行（`MAX_LOG_ROWS`），超出丢弃最旧的。
+   更长的历史请直接读 JSONL 文件。
+5. **捕获参数不可在界面调整**：分片大小 / 数量、状态采集间隔等统一用 `CaptureConfig::default()`。
 6. **图标可能抓不到**：Python 服务类应用没有窗口，exe 又是解释器，因此会显示内置默认图——
    这是**产品决策**而不是缺陷（详见 [ICONS.md](ICONS.md)）。运行时图标要在会话启动后 1.5 秒才重抓一次。

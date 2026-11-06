@@ -67,8 +67,12 @@ export const INITIAL_CURSOR: LogCursor = {
   truncated: false,
 };
 
-/** 日志缓冲区上限：超出后丢弃最旧的行，防止长跑会话把内存吃满。 */
-export const MAX_LOG_ROWS = 4000;
+/**
+ * 日志缓冲区上限：超出后丢弃最旧的行，防止长跑会话把内存吃满。
+ *
+ * 日志视图是虚拟滚动，渲染成本与行数无关；这个上限只约束内存与搜索（全量子串匹配）的开销。
+ */
+export const MAX_LOG_ROWS = 20000;
 
 /** 每次翻页请求的条数。 */
 export const PAGE_LINES = 500;
@@ -264,11 +268,16 @@ export function shouldAutoScroll(
   return scrollHeight - scrollTop - clientHeight <= tolerance;
 }
 
-/** 轮询间隔（毫秒）：有运行中会话时快，否则放慢。 */
-export const POLL_FAST_MS = 1000;
-export const POLL_IDLE_MS = 3000;
+/**
+ * 兜底轮询间隔（毫秒）。
+ *
+ * 数据刷新主要靠后端推送（见 `api.ts` 的 `sessionEvents`）；轮询只兜「漏了事件」的情况，
+ * 因此间隔可以很长。有运行中会话时稍快，全部退出后更慢。
+ */
+export const POLL_FAST_MS = 5000;
+export const POLL_IDLE_MS = 15000;
 
-/** 根据是否有运行中会话决定下一次轮询间隔。 */
+/** 根据是否有运行中会话决定下一次兜底轮询的间隔。 */
 export function pollInterval(runningCount: number): number {
   return runningCount > 0 ? POLL_FAST_MS : POLL_IDLE_MS;
 }

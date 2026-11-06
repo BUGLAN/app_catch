@@ -14,10 +14,14 @@
  *   - 日志/事件两个视图共用 .scroll-surface（原来是两份一模一样的六行声明）；
  *   - 输出行不做严重程度着色：stderr 不等于出错，按内容猜又必然误判（见 logModel 的 LogRow.level）。
  *     来源流只用中性的 stdout / stderr 小标签标注，找错误交给日志搜索（⌘F / Ctrl+F）。
+ *
+ * 日志视图是虚拟滚动（useVirtualRows）：只渲染视口附近的行，内存里可以保留更多行
+ * （MAX_LOG_ROWS），滚动与追加都不会随行数变慢。
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useSessionLog } from "../hooks/useSessionLog";
+import { useVirtualRows } from "../hooks/useVirtualRows";
 import {
   describeExit,
   exitReasonLabel,
@@ -37,7 +41,6 @@ import { Banner, EmptyNotice, Segmented, TabPanel } from "./ui/Primitives";
 
 interface Props {
   session: SessionSnapshot;
-  allSessions: SessionSnapshot[];
 }
 
 /** 视图切换：日志流 / 结构化事件列表。 */
@@ -46,7 +49,16 @@ type ViewMode = "log" | "events";
 /** 聚焦日志搜索的快捷键文案（与标题栏 ⌘N 同一套平台判定）。 */
 const FIND_SHORTCUT = detectPlatform() === "macos" ? "⌘F" : "Ctrl+F";
 
-export function SessionDetail({ session, allSessions }: Props) {
+/** 日志视图里的一行：日志行本身 + 它在全部日志行里的序号（搜索命中用）。 */
+interface VisibleRow {
+  row: LogRow;
+  index: number;
+}
+
+/** 虚拟滚动的行 key（模块级函数，引用稳定）。 */
+const visibleRowKey = (entry: VisibleRow) => entry.row.key;
+
+export function SessionDetail({ session }: Props) {
   const { rows, recentEvents, skippedLines, truncated, gone, error, snapshot, clear } =
     useSessionLog(session);
   const [mode, setMode] = useState<ViewMode>("log");
@@ -60,6 +72,15 @@ export function SessionDetail({ session, allSessions }: Props) {
   const [jump, setJump] = useState(0);
 
   const logRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * 日志容器元素（state 版）：标签页切到「最近事件」时日志面板会卸载，
+   * 切回来是一个新元素，虚拟滚动要重新挂监听，因此用回调 ref 同步成 state。
+   */
+  const [logElement, setLogElement] = useState<HTMLDivElement | null>(null);
+  const attachLog = useCallback((node: HTMLDivElement | null) => {
+    logRef.current = node;
+    setLogElement(node);
+  }, []);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const matches = useMemo(() => findMatches(rows, query), [rows, query]);
   const searching = query.length > 0;
@@ -67,14 +88,23 @@ export function SessionDetail({ session, allSessions }: Props) {
   const headingId = "session-heading";
   const panelPrefix = "session-view";
 
-  // 新行到达后：只有原本就在底部才跟随滚动
+  const visibleRows: VisibleRow[] = useMemo(
+    () =>
+      searching && onlyMatches
+        ? matches.map((index) => ({ row: rows[index]!, index }))
+        : rows.map((row, index) => ({ row, index })),
+    [matches, onlyMatches, rows, searching]
+  );
+  const virtual = useVirtualRows(visibleRows, visibleRowKey, logElement);
+
+  // 新行到达（或测量修正了总高度）后：只有原本就在底部才跟随滚动
   useLayoutEffect(() => {
     const element = logRef.current;
     if (!element || !autoScroll || mode !== "log") {
       return;
     }
     element.scrollTop = element.scrollHeight;
-  }, [rows, autoScroll, mode]);
+  }, [rows, autoScroll, mode, virtual.totalHeight]);
 
   // 切换会话时搜索状态归零：上一个会话的查询对新会话没有意义
   useEffect(() => {
@@ -83,16 +113,22 @@ export function SessionDetail({ session, allSessions }: Props) {
     setCurrent(-1);
   }, [session.session_id]);
 
-  // 定位到命中：滚到视口中间，并暂停自动滚底，否则下一批输出会把视图拽走
+  // 定位到命中：滚到视口中间，并暂停自动滚底，否则下一批输出会把视图拽走。
+  // 目标行可能还没渲染（虚拟滚动），先按估计位置滚过去，下一帧它渲染出来后再精确居中。
   useEffect(() => {
-    if (jump === 0) {
+    if (jump === 0 || currentRow < 0) {
       return;
     }
-    const target = logRef.current?.querySelector<HTMLElement>('[data-current-match="true"]');
-    if (target) {
-      setAutoScroll(false);
-      target.scrollIntoView({ block: "center" });
-    }
+    setAutoScroll(false);
+    virtual.scrollToIndex(searching && onlyMatches ? current : currentRow);
+    const frame = window.requestAnimationFrame(() => {
+      logRef.current
+        ?.querySelector<HTMLElement>('[data-current-match="true"]')
+        ?.scrollIntoView({ block: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+    // 只在「要求定位」时触发；其余值在那一刻读取即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jump]);
 
   const goTo = (index: number) => {
@@ -137,11 +173,6 @@ export function SessionDetail({ session, allSessions }: Props) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const visibleRows: { row: LogRow; index: number }[] =
-    searching && onlyMatches
-      ? matches.map((index) => ({ row: rows[index]!, index }))
-      : rows.map((row, index) => ({ row, index }));
-
   const handleScroll = () => {
     const element = logRef.current;
     if (!element) {
@@ -161,8 +192,6 @@ export function SessionDetail({ session, allSessions }: Props) {
   const ports = snapshot.latest_status?.ports ?? [];
   const windowTitle = snapshot.latest_status?.window_title ?? null;
   const lastExit = snapshot.last_exit;
-
-  const live = allSessions.some((item) => item.session_id === snapshot.session_id);
 
   const describeExit = (exit: NonNullable<typeof lastExit>) =>
     `${exit.code === null ? "无退出码" : `码 ${exit.code}`} · ${exitReasonLabel(exit.reason)}`;
@@ -237,9 +266,6 @@ export function SessionDetail({ session, allSessions }: Props) {
           该会话已不在启动器的运行表中（可能是重启启动器前的旧会话）。下方日志来自已落盘的事件文件，
           进程状态与实时输出无法再接管。
         </Banner>
-      ) : null}
-      {!live && !gone && snapshot.state === "running" ? (
-        <Banner tone="info">该会话已退出运行表，正在读取残留日志。</Banner>
       ) : null}
       {truncated ? (
         <Banner tone="warn">
@@ -374,7 +400,7 @@ export function SessionDetail({ session, allSessions }: Props) {
         active={mode === "log"}
         label="实时日志输出"
         className="scroll-surface log-view"
-        ref={logRef}
+        ref={attachLog}
         onScroll={handleScroll}
       >
         {rows.length === 0 ? (
@@ -384,14 +410,15 @@ export function SessionDetail({ session, allSessions }: Props) {
         ) : searching && onlyMatches && visibleRows.length === 0 ? (
           <EmptyNotice icon={<IconSearch size={14} />}>没有包含「{query}」的行。</EmptyNotice>
         ) : (
-          visibleRows.map(({ row, index }) => (
-            <LogLine
-              key={row.key}
-              row={row}
-              query={query}
-              isCurrent={index === currentRow}
-            />
-          ))
+          <>
+            <div className="log-spacer" style={{ height: virtual.padTop }} aria-hidden="true" />
+            {visibleRows.slice(virtual.start, virtual.end).map(({ row, index }) => (
+              <div className="log-row" key={row.key} data-vkey={row.key}>
+                <LogLine row={row} query={query} isCurrent={index === currentRow} />
+              </div>
+            ))}
+            <div className="log-spacer" style={{ height: virtual.padBottom }} aria-hidden="true" />
+          </>
         )}
       </TabPanel>
 
@@ -432,8 +459,20 @@ export function SessionDetail({ session, allSessions }: Props) {
   );
 }
 
-/** 单条日志行：分隔行 / 提示行 / 普通输出行三种形态。 */
-function LogLine({ row, query, isCurrent }: { row: LogRow; query: string; isCurrent: boolean }) {
+/**
+ * 单条日志行：分隔行 / 提示行 / 普通输出行三种形态。
+ *
+ * memo：滚动时只有进出视口的行需要渲染，已在视口里的行 props 不变就跳过。
+ */
+const LogLine = memo(function LogLine({
+  row,
+  query,
+  isCurrent,
+}: {
+  row: LogRow;
+  query: string;
+  isCurrent: boolean;
+}) {
   const matchAttr = isCurrent ? { "data-current-match": "true" } : {};
   const currentClass = isCurrent ? " is-current-match" : "";
 
@@ -484,7 +523,7 @@ function LogLine({ row, query, isCurrent }: { row: LogRow; query: string; isCurr
       </span>
     </div>
   );
-}
+});
 
 /** 把搜索命中渲染成 <mark>；没有查询时直接输出原文。 */
 function Highlighted({ text, query }: { text: string; query: string }) {

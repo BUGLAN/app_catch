@@ -21,6 +21,7 @@ const {
   loadIcon,
   loadDefaultIcon,
   invalidateIcon,
+  recaptureIcon,
   resetIconCache,
   seedIcon,
 } = await import("./iconModel");
@@ -130,6 +131,40 @@ describe("loadIcon", () => {
     seedIcon("seeded", PNG_URL);
     await expect(loadIcon("seeded")).resolves.toBe(PNG_URL);
     expect(getAppIcon).not.toHaveBeenCalled();
+  });
+});
+
+describe("recaptureIcon", () => {
+  beforeEach(() => {
+    resetIconCache();
+    getAppIcon.mockReset();
+    defaultIcon.mockReset();
+  });
+
+  it("强制重抓一次并写回缓存，之后普通加载直接命中", async () => {
+    seedIcon("app", "data:image/png;base64,OLD");
+    getAppIcon.mockResolvedValue("data:image/png;base64,NEW");
+    await recaptureIcon("app");
+    expect(getAppIcon).toHaveBeenCalledWith("app", true);
+
+    await expect(loadIcon("app")).resolves.toBe("data:image/png;base64,NEW");
+    await expect(loadIcon("app")).resolves.toBe("data:image/png;base64,NEW");
+    expect(getAppIcon).toHaveBeenCalledTimes(1);
+  });
+
+  it("只影响指定的应用", async () => {
+    seedIcon("other", PNG_URL);
+    getAppIcon.mockResolvedValue(null);
+    await recaptureIcon("app");
+    await expect(loadIcon("other")).resolves.toBe(PNG_URL);
+    expect(getAppIcon).toHaveBeenCalledTimes(1);
+  });
+
+  it("重抓失败时保留旧图标", async () => {
+    seedIcon("app", PNG_URL);
+    getAppIcon.mockRejectedValue(new Error("boom"));
+    await recaptureIcon("app");
+    await expect(loadIcon("app")).resolves.toBe(PNG_URL);
   });
 });
 

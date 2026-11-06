@@ -25,15 +25,14 @@ interface Props {
   name: string;
   /** 尺寸档位：列表用小，详情用大。 */
   size?: "sm" | "lg";
-  /** 外部触发刷新（例如会话启动后重新抓运行时图标）。 */
-  refreshKey?: number;
   /**
-   * 刷新时是否绕过缓存强制重抓。
+   * 图标版本：变化时重新从缓存取一次。
    *
-   * 会话刚启动那一次必须为真：窗口这时才出现，窗口档位第一次可能拿到真图标，
-   * 而磁盘上很可能还躺着一张更早抓到的 `pnpm.cmd` 通用图标。
+   * 会话启动后由 App 对**那一个应用**调用 `recaptureIcon` 强制重抓并写回缓存，
+   * 再递增该应用的版本号；本组件只负责重新读缓存，自己从不强制重抓，
+   * 因此其他应用的图标不会被牵连，同一应用的列表图标与详情图标也只抓一次。
    */
-  forceRefresh?: boolean;
+  version?: number;
 }
 
 /** 已加载的内置默认图（模块级共享，只取一次）。 */
@@ -43,8 +42,7 @@ export function AppIcon({
   appId,
   name,
   size = "sm",
-  refreshKey = 0,
-  forceRefresh = false,
+  version = 0,
 }: Props) {
   const [icon, setIcon] = useState<IconView>(undefined);
   const [fallback, setFallback] = useState<string>(cachedDefaultIcon ?? "");
@@ -69,20 +67,19 @@ export function AppIcon({
   }, []);
 
   /*
-   * 记住上一次已经处理过的 refreshKey。
-   *
-   * 强制重抓只应该发生在「refreshKey 真的递增」的那一次（= 会话刚启动），
-   * 而不是每次 appId 切换都顺带穿透一次缓存——后者只是白白多跑一遍 Shell API。
+   * 记住上一次渲染的 appId：只有换了应用才回到加载态。
+   * 同一应用的版本号变化只是换一张图，旧图保留到新图到达，避免闪一下占位块。
    */
-  const lastRefreshKey = useRef(refreshKey);
+  const lastAppId = useRef(appId);
 
-  // 应用图标：appId 变化或外部要求刷新时重新取
+  // 应用图标：appId 或版本号变化时重新取（走缓存）
   useEffect(() => {
-    const keyChanged = lastRefreshKey.current !== refreshKey;
-    lastRefreshKey.current = refreshKey;
+    if (lastAppId.current !== appId) {
+      lastAppId.current = appId;
+      setIcon(undefined);
+    }
     let cancelled = false;
-    setIcon(undefined);
-    loadIcon(appId, forceRefresh && keyChanged).then((value) => {
+    loadIcon(appId).then((value) => {
       if (!cancelled) {
         setIcon(value);
       }
@@ -90,7 +87,7 @@ export function AppIcon({
     return () => {
       cancelled = true;
     };
-  }, [appId, refreshKey, forceRefresh]);
+  }, [appId, version]);
 
   const sizeClass = size === "lg" ? " app-icon-lg" : "";
   const className = "app-icon" + sizeClass;

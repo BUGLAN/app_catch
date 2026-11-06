@@ -11,11 +11,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import type { NoticePayload } from "./sessions";
 import type {
   AppConfig,
   AppConfigInput,
   BootReport,
-  CaptureConfig,
   CommandError,
   ProjectDetection,
   SessionEventsPage,
@@ -27,6 +27,12 @@ export const NOT_HOSTED_MESSAGE = "未连接到 Tauri 宿主（请用 pnpm tauri
 
 /** 最大化状态变化事件名：与 `src-tauri/src/window.rs` 的 MAXIMIZED_EVENT 一致。 */
 export const MAXIMIZED_EVENT = "window:maximized-changed";
+
+/** 会话列表变化事件名：与 `src-tauri/src/notices.rs` 的 SESSIONS_CHANGED_EVENT 一致。 */
+export const SESSIONS_CHANGED_EVENT = "sessions:changed";
+
+/** 会话日志追加事件名：与 `src-tauri/src/notices.rs` 的 SESSION_LOG_EVENT 一致。 */
+export const SESSION_LOG_EVENT = "session:log-appended";
 
 /** 把任意抛出值归一成 CommandError。 */
 export function toCommandError(raw: unknown): CommandError {
@@ -99,18 +105,14 @@ export const api = {
     call<SessionSnapshot>("restart_session", { sessionId, appId }),
   /** 列出运行中的会话。 */
   listActiveSessions: () => call<SessionSnapshot[]>("list_active_sessions"),
+  /** 列出会话：运行中的全部 + 每个应用最近退出的几个（按启动先后排序）。 */
+  listSessions: () => call<SessionSnapshot[]>("list_sessions"),
   /** 查询会话状态。 */
   getSessionStatus: (sessionId: string) =>
     call<SessionSnapshot>("get_session_status", { sessionId }),
   /** 增量读取会话事件。 */
   readSessionEvents: (sessionId: string, fromLine: number, maxLines: number) =>
     call<SessionEventsPage>("read_session_events", { sessionId, fromLine, maxLines }),
-
-  /** 读取捕获配置。 */
-  getCaptureConfig: () => call<CaptureConfig>("get_capture_config"),
-  /** 写入捕获配置。 */
-  setCaptureConfig: (config: CaptureConfig) =>
-    call<CaptureConfig>("set_capture_config", { config }),
 
   /** 启动期恢复残留会话。 */
   recoverSessions: () => call<BootReport>("recover_sessions"),
@@ -173,3 +175,30 @@ export async function onMaximizedChange(
     return () => {};
   }
 }
+
+/** 订阅一个后端事件；非宿主环境或订阅失败时返回空操作。 */
+async function subscribe<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
+  if (!isHosted()) {
+    return () => {};
+  }
+  try {
+    return await listen<T>(event, (message) => handler(message.payload));
+  } catch {
+    return () => {};
+  }
+}
+
+/**
+ * 会话变化推送（与 `src-tauri/src/notices.rs` 对应）。
+ *
+ * 事件只说明「哪些会话变了」，不带数据：收到后照常调用命令取数据。
+ * 后端已经按 50ms 窗口合并过，前端不需要再节流。
+ */
+export const sessionEvents = {
+  /** 会话启动 / 退出 / 窗口标题或端口变化。 */
+  onSessionsChanged: (handler: (payload: NoticePayload) => void) =>
+    subscribe<NoticePayload>(SESSIONS_CHANGED_EVENT, handler),
+  /** 会话日志有新内容。 */
+  onLogAppended: (handler: (payload: NoticePayload) => void) =>
+    subscribe<NoticePayload>(SESSION_LOG_EVENT, handler),
+};

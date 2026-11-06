@@ -1,5 +1,11 @@
 /**
- * 应用详情：图标 + 配置展示 + 操作按钮 + 该应用的活跃会话列表（多实例）。
+ * 应用详情：图标 + 配置展示 + 操作按钮 + 该应用的会话列表（多实例）。
+ *
+ * 会话列表包含运行中的会话和最近退出的几个（按启动先后排序），
+ * 进程退出后用户仍能选中它、查看退出码与最后的输出。
+ *
+ * 进行中的操作按应用 / 按会话记录：启动 A 时只禁用 A 的「启动」，
+ * 别的应用、别的会话照常可操作（before hook 可能要跑很久，例如 pnpm install）。
  *
  * 表现层改动：
  *   - 键值表改用共享 KeyValueList，长路径与长命令行统一走 overflow-wrap；
@@ -9,6 +15,7 @@
  */
 import type { AppConfig, SessionSnapshot } from "../lib/types";
 import { formatDateTime, renderCommand, runStateLabel } from "../lib/logModel";
+import { latestRunning } from "../lib/sessions";
 import { AppIcon } from "./AppIcon";
 import { IconEdit, IconPlay, IconRestart, IconStop, IconTrash } from "./ui/Icons";
 import { EmptyNotice, KeyValueList } from "./ui/Primitives";
@@ -17,37 +24,45 @@ interface Props {
   app: AppConfig;
   sessions: SessionSnapshot[];
   selectedSession: string | null;
-  busy: boolean;
+  /** 本应用的启动 / 重启请求是否在进行中。 */
+  starting: boolean;
+  /** 正在停止的会话 id。 */
+  stoppingIds: ReadonlySet<string>;
+  /** 应用配置正在保存或删除（编辑 / 删除按钮随之禁用）。 */
+  saving: boolean;
   onStart: () => void;
   onStop: (sessionId: string) => void;
   onRestart: (sessionId: string, appId: string) => void;
   onEdit: () => void;
   onDelete: () => void;
   onSelectSession: (sessionId: string) => void;
-  /** 图标刷新触发器：会话启动后 +1，重新抓运行时图标。 */
-  iconRefresh?: number;
-  /** 刷新时是否强制穿透缓存（会话刚启动那一次为真）。 */
-  iconForceRefresh?: boolean;
+  /** 本应用的图标版本（会话启动并重抓图标后递增），见 AppIcon 的 `version`。 */
+  iconVersion?: number;
 }
 
 export function AppDetail({
   app,
   sessions,
   selectedSession,
-  busy,
+  starting,
+  stoppingIds,
+  saving,
   onStart,
   onStop,
   onRestart,
   onEdit,
   onDelete,
   onSelectSession,
-  iconRefresh = 0,
-  iconForceRefresh = false,
+  iconVersion = 0,
 }: Props) {
   const envEntries = Object.entries(app.env ?? {});
   const tags = app.tags ?? [];
-  const runningCount = sessions.filter((session) => session.state === "running").length;
-  const hasRunning = runningCount > 0;
+  const stopTarget = latestRunning(sessions);
+  const stopTargetBusy = stopTarget !== null && stoppingIds.has(stopTarget.session_id);
+  const restartTarget =
+    sessions.find((session) => session.session_id === selectedSession) ??
+    sessions[sessions.length - 1] ??
+    null;
 
   const kvItems = [
     {
@@ -108,8 +123,7 @@ export function AppDetail({
             appId={app.id}
             name={app.name}
             size="lg"
-            refreshKey={iconRefresh}
-            forceRefresh={iconForceRefresh}
+            version={iconVersion}
           />
           <div className="panel-heading">
             <h2 className="panel-title" id="app-detail-title">
@@ -121,42 +135,46 @@ export function AppDetail({
           </div>
         </div>
         <div className="panel-actions">
-          <button type="button" className="btn btn-primary" onClick={onStart} disabled={busy}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={onStart}
+            disabled={starting}
+            aria-busy={starting}
+          >
             <IconPlay size={11} />
-            启动
+            {starting ? "启动中…" : "启动"}
           </button>
           <button
             type="button"
             className="btn"
             onClick={() => {
-              const target = sessions.find((session) => session.state === "running");
-              if (target) {
-                onStop(target.session_id);
+              if (stopTarget) {
+                onStop(stopTarget.session_id);
               }
             }}
-            disabled={busy || !hasRunning}
-            title={hasRunning ? "停止最近启动的运行中会话" : "没有运行中的会话"}
+            disabled={stopTarget === null || stopTargetBusy}
+            aria-busy={stopTargetBusy}
+            title={stopTarget ? "停止最近启动的运行中会话" : "没有运行中的会话"}
           >
             <IconStop size={11} />
-            停止
+            {stopTargetBusy ? "停止中…" : "停止"}
           </button>
           <button
             type="button"
             className="btn"
             onClick={() => {
-              const target =
-                sessions.find((session) => session.session_id === selectedSession) ?? sessions[0];
-              if (target) {
-                onRestart(target.session_id, app.id);
+              if (restartTarget) {
+                onRestart(restartTarget.session_id, app.id);
               }
             }}
-            disabled={busy || sessions.length === 0}
-            title={sessions.length === 0 ? "该应用还没有会话" : "停止旧会话并用同一配置重启"}
+            disabled={starting || restartTarget === null}
+            title={restartTarget === null ? "该应用还没有会话" : "停止选中的会话并用同一配置重启"}
           >
             <IconRestart size={12} />
             重启
           </button>
-          <button type="button" className="btn btn-ghost" onClick={onEdit} disabled={busy}>
+          <button type="button" className="btn btn-ghost" onClick={onEdit} disabled={saving}>
             <IconEdit size={12} />
             编辑
           </button>
@@ -164,7 +182,7 @@ export function AppDetail({
             type="button"
             className="btn btn-ghost btn-danger-text"
             onClick={onDelete}
-            disabled={busy}
+            disabled={saving || starting}
           >
             <IconTrash size={12} />
             删除
@@ -175,7 +193,7 @@ export function AppDetail({
       <KeyValueList items={kvItems} />
 
       <div className="subhead">
-        <h3>活跃会话</h3>
+        <h3>会话</h3>
         <span className="count">{sessions.length}</span>
       </div>
 
@@ -208,6 +226,7 @@ export function AppDetail({
             <tbody>
               {sessions.map((session) => {
                 const selected = session.session_id === selectedSession;
+                const stopping = stoppingIds.has(session.session_id);
                 return (
                   <tr
                     key={session.session_id}
@@ -246,13 +265,14 @@ export function AppDetail({
                       <button
                         type="button"
                         className="btn btn-mini"
-                        disabled={busy || session.state !== "running"}
+                        disabled={stopping || session.state !== "running"}
+                        aria-busy={stopping}
                         onClick={(event) => {
                           event.stopPropagation();
                           onStop(session.session_id);
                         }}
                       >
-                        停止
+                        {stopping ? "停止中…" : "停止"}
                       </button>
                     </td>
                   </tr>

@@ -352,6 +352,14 @@
   line-height: 1.65;
 }
 
+/*
+ * 虚拟滚动的行容器：测量靠它。flow-root 让它包住分隔行 / 提示行的上下 margin，
+ * 测出来的高度才等于这一行实际占的空间（否则相邻 margin 会穿透折叠）。
+ */
+.log-row {
+  display: flow-root;
+}
+
 .log-line {
   display: flex;
   align-items: baseline;

@@ -81,6 +81,25 @@ export function loadIcon(appId: string, force = false): Promise<IconState> {
 }
 
 /**
+ * 会话刚启动后强制重抓一次图标，结果写回会话内缓存。
+ *
+ * 窗口这时才出现，窗口档位第一次可能拿到应用自设的真图标，必须能覆盖磁盘上
+ * 更早抓到的通用图标（如 `pnpm.cmd`）。由 App 针对**刚启动的那个应用**调用一次，
+ * 之后各处 `AppIcon` 走普通路径从缓存取：列表与详情各挂一个图标也只抓一次，
+ * 其他应用的图标完全不受影响。
+ *
+ * 失败时保留原有缓存，不把已有图标冲掉。
+ */
+export async function recaptureIcon(appId: string): Promise<void> {
+  try {
+    const url = await api.getAppIcon(appId, true);
+    resolved.set(appId, url && url.length > 0 ? url : null);
+  } catch {
+    // 静默：图标是装饰性信息
+  }
+}
+
+/**
  * 丢弃某个应用的图标缓存，让下次加载重新抓取。
  *
  * 用在「用户点了启动」之后：会话起来后窗口才存在，
