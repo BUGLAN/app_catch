@@ -8,7 +8,12 @@ name: Release
 # 需要的仓库 secrets（缺失时签名与清单步骤会失败，构建产物仍留作 artifact）：
 #   TAURI_SIGNING_PRIVATE_KEY          更新产物签名私钥（本机 ~/.app_catch-updater/app_catch.key 的内容）
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD 私钥密码（本机 ~/.app_catch-updater/password.txt）
-# 说明与密钥保管见 README「发布与自动更新」一节。
+# 说明与密钥保管见 README「发布」一节。
+#
+# 可选的 macOS 代码签名 secrets（由 scripts/gen-macos-signing-cert.sh 生成，缺失时退回 ad-hoc 签名并告警）：
+#   MACOS_SIGNING_CERT_P12       自签名证书 cert.p12 的 base64（本机 ~/.app_catch-signing/cert.p12）
+#   MACOS_SIGNING_CERT_PASSWORD  cert.p12 的密码（本机 ~/.app_catch-signing/password.txt）
+# 固定证书签名让用户的麦克风等隐私授权在升级后保留，见 docs/MACOS_PERMISSIONS.md。
 
 on:
   push:
@@ -58,12 +63,69 @@ jobs:
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
 
+      # 自签名证书不能走 Tauri 的 APPLE_CERTIFICATE 导入流程（它只认 Apple 签发、带 Team ID 的证书），
+      # 所以这里自己导入临时 keychain，只把 APPLE_SIGNING_IDENTITY 交给 Tauri，它会直接 `codesign -s <身份>`。
+      - name: 导入 macOS 签名证书
+        if: runner.os == 'macOS'
+        env:
+          CERT_P12: ${{ secrets.MACOS_SIGNING_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12" ] || [ -z "$CERT_PASSWORD" ]; then
+            echo "::warning::未配置 MACOS_SIGNING_CERT_P12 / MACOS_SIGNING_CERT_PASSWORD，macOS 产物退回 ad-hoc 签名，用户升级后隐私授权会失效"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/app-catch-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # 允许 codesign 免交互使用私钥
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          # Tauri 调 codesign 时不带 --keychain，必须把临时 keychain 加进用户搜索列表
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # 自签名证书不受系统信任，`find-identity -v` 会把它滤掉，所以这里不加 -v；codesign 本身不要求受信任
+          identity="$(security find-identity -p codesigning "$keychain" | awk '/^ *1\)/ {print $2; exit}')"
+          if [ -z "$identity" ]; then
+            echo "证书导入后找不到代码签名身份，检查 p12 是否包含私钥、证书是否带 codeSigning 用途" >&2
+            security find-identity -p codesigning "$keychain" >&2
+            exit 1
+          fi
+          echo "使用签名身份 $identity"
+          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "MACOS_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
       # TAURI_SIGNING_PRIVATE_KEY 可以是私钥内容，也可以是文件路径（见 tauri signer 文档）
       - name: 打包并签名更新产物
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target ${{ matrix.target }}
+
+      # 配了证书却没签上（比如 Tauri 改了行为）时直接失败，不能悄悄发出 ad-hoc 版本
+      - name: 校验 macOS 代码签名
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_IDENTITY != ''
+        run: |
+          app="$(find "target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name '*.app' | head -1)"
+          if [ -z "$app" ]; then
+            echo "找不到打包出的 .app" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app"
+          requirement="$(codesign -d -r- "$app" 2>&1)"
+          echo "$requirement"
+          # 固定证书签名的签名要求形如 identifier "..." and certificate leaf = H"..."；ad-hoc 则是 cdhash
+          if ! printf '%s' "$requirement" | grep -q 'certificate leaf = H"'; then
+            echo "签名要求里没有证书指纹，产物不是用固定证书签的" >&2
+            exit 1
+          fi
+
+      - name: 清理 macOS 签名 keychain
+        if: always() && runner.os == 'macOS' && env.MACOS_SIGNING_KEYCHAIN != ''
+        run: security delete-keychain "$MACOS_SIGNING_KEYCHAIN" || true
 
       - name: 收集安装包与签名件
         run: |
