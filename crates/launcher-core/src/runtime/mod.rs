@@ -8,6 +8,7 @@
 //! | [`capture`] | 管道逐行读取（不丢非法 UTF-8 行）、有界 channel、overflow 补写 |
 //! | [`status`] | 状态采集：`StatusProbe` 探针接口、窗口标题 / 监听端口采集、变化才写事件 |
 //! | [`hooks`] | 启动 hook：before（启动前，失败中止启动）/ after（启动后，后台执行） |
+//! | [`notice`] | 会话变化通知：启动 / 退出 / 状态变化 / 日志追加，供 GUI 推送而不是轮询 |
 //! | [`session_manager`] | 会话生命周期门面：start / stop / restart / status / recover |
 //!
 //! 平台进程能力由 [`crate::platform::ProcessBackend`] 提供，本层只依赖 trait。
@@ -15,14 +16,16 @@
 pub mod capture;
 pub mod hooks;
 pub mod log_writer;
+pub mod notice;
 pub mod session_manager;
 pub mod status;
 
-pub use capture::{CaptureConfig, CapturePipeline, CaptureSummary};
+pub use capture::{AppendNotify, CaptureConfig, CapturePipeline, CaptureSummary};
 pub use log_writer::{shard_file_name, LogWriter, LogWriterConfig};
+pub use notice::{SessionNotice, NOTICE_CAPACITY};
 pub use session_manager::{
     classify_exit, render_command, state_for_reason, ExitInfo, SessionHandle, SessionManager,
-    SessionSnapshot,
+    SessionSnapshot, RECENT_EXITED_PER_APP,
 };
 pub use status::{
     default_status_probe, CompositeProbe, EmptyProbe, ProbeContext, StatusProbe, StatusSnapshot,

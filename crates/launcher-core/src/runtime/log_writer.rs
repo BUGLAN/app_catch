@@ -1,14 +1,24 @@
-//! 会话日志写入器：JSONL 追加、批量 flush、按体积轮转、保留 N 个分片。
+//! 会话日志写入器：JSONL 追加、批量写盘、按体积轮转、保留 N 个分片。
 //!
 //! 三条硬性约束：
 //!
-//! 1. **绝不切断一行**：一次写入的最小单位是「整行 JSON（含行尾换行）」，
-//!    轮转只发生在两次写入之间，因此任何分片文件的最后一行都是完整可解析的。
-//! 2. **批量 flush**：每 [`DEFAULT_FLUSH_EVERY`] 条或 [`DEFAULT_FLUSH_INTERVAL`] 触发一次
-//!    flush + sync；会话结束时强制 flush，保证进程退出即可见完整日志。
+//! 1. **绝不切断一行**：缓冲与写盘的最小单位都是「整行 JSON（含行尾换行）」，
+//!    轮转只发生在两次写入之间（轮转前先把缓冲写进旧片），因此任何分片文件的最后一行都是完整可解析的。
+//! 2. **两级批量**：
+//!    - 交给操作系统（`write`）：攒满 [`WRITE_BUFFER_BYTES`]、累计 [`DEFAULT_FLUSH_EVERY`] 行、
+//!      或调用方显式 [`LogWriter::flush_to_os`]（捕获管线在队列排空时调用）。交出去之后其他读者就能读到，
+//!      启动器进程被强杀也不会丢；
+//!    - 同步到磁盘（`sync_all`）：写入空闲时（[`LogWriter::flush_idle`]，捕获管线在队列排空时调用）
+//!      距上次同步超过 [`DEFAULT_FLUSH_INTERVAL`] 才做一次，外加显式 [`LogWriter::flush`] 与会话结束。
+//!      它只防断电 / 系统崩溃，代价很高（macOS 上是 `F_FULLFSYNC`，一次可达几十毫秒），
+//!      因此既不按行数触发，也不在积压时触发——否则一次同步就会让队列积满、读取端开始丢行。
 //! 3. **轮转可追溯**：主文件恒为 `events.jsonl`（当前活跃片）；超限时把它改名为
 //!    `events.<seq>.jsonl`（seq 从 1 递增）再新建空的主文件，并只保留最近 N 片，
 //!    删除最旧的。删除失败只记录，不 panic，也不影响会话继续运行。
+//!
+//! 为什么要用户态缓冲：tokio 的 `File::write_all` 每次都要往阻塞线程池走一趟，
+//! 逐行写时写盘任务只有每秒几万行，跟不上一口气打印的进程，捕获管线只能丢行
+//! （见 `examples/flood_bench.rs`）。
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -26,11 +36,14 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// 默认保留的分片数量上限（不含当前活跃的 `events.jsonl`）。
 pub const DEFAULT_MAX_SHARDS: usize = 5;
 
-/// 默认每写多少行触发一次 flush。
+/// 默认累计多少行就把缓冲交给操作系统一次。
 pub const DEFAULT_FLUSH_EVERY: usize = 64;
 
-/// 默认最长多久触发一次 flush（避免低速率输出长时间不落盘）。
+/// 默认两次 `sync_all`（同步到磁盘）之间至少隔多久；同步只在写入空闲时做。
 pub const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// 用户态写缓冲的容量：攒满就交给操作系统一次。
+pub const WRITE_BUFFER_BYTES: usize = 64 * 1024;
 
 /// 日志写入配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,9 +52,9 @@ pub struct LogWriterConfig {
     pub max_file_bytes: u64,
     /// 保留的历史分片数量（不含当前活跃片）。
     pub max_shards: usize,
-    /// 每累计多少行 flush 一次。
+    /// 每累计多少行就把缓冲交给操作系统一次（不 sync）。
     pub flush_every: usize,
-    /// 距上次 flush 超过多久就强制 flush 一次。
+    /// 写入空闲时，距上次 `sync_all` 超过多久就再同步一次到磁盘（见 [`LogWriter::flush_idle`]）。
     pub flush_interval: Duration,
 }
 
@@ -66,12 +79,14 @@ pub struct LogWriter {
     dir: PathBuf,
     config: LogWriterConfig,
     file: Option<File>,
-    /// 当前活跃片已写入的字节数（用于判定轮转）。
+    /// 当前活跃片已写入的字节数（含还在缓冲里的；用于判定轮转）。
     written_bytes: u64,
-    /// 距上次 flush 的未落盘行数。
+    /// 已序列化、还没交给操作系统的整行数据（非空时总以 `\n` 结尾）。
+    buffer: Vec<u8>,
+    /// 缓冲里的行数。
     pending_lines: usize,
-    /// 上次 flush 的时间。
-    last_flush: Instant,
+    /// 上次 `sync_all` 的时间。
+    last_sync: Instant,
     /// 已轮转出的分片数（决定下一个 seq）。
     shard_seq: u32,
     /// 历史分片文件名（按 seq 升序），用于保留策略。
@@ -100,19 +115,16 @@ impl LogWriter {
             .map_err(|e| AppCatchError::io(&dir, e))?;
         let path = dir.join(paths::SESSION_LOG_FILE);
         let file = open_append(&path).await?;
-        let written_bytes = file
-            .metadata()
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let written_bytes = file.metadata().await.map(|m| m.len()).unwrap_or(0);
 
         Ok(Self {
             dir,
             config,
             file: Some(file),
             written_bytes,
+            buffer: Vec::with_capacity(WRITE_BUFFER_BYTES),
             pending_lines: 0,
-            last_flush: Instant::now(),
+            last_sync: Instant::now(),
             shard_seq: 0,
             shards: Vec::new(),
             total_lines: 0,
@@ -142,18 +154,14 @@ impl LogWriter {
 
     /// 写入一行文本（不含行尾换行，内部补 `\n`）。
     ///
-    /// 轮转判定发生在写入之前：若「当前片 + 本行」会超过上限，就先把当前片轮转走。
+    /// 只是追加进用户态缓冲；何时交给操作系统、何时同步到磁盘见模块文档「两级批量」。
+    /// 轮转判定发生在追加之前：若「当前片 + 本行」会超过上限，就先把当前片（连同缓冲）轮转走。
     /// 这样每片的最后一行永远是完整的。
     pub async fn write_line(&mut self, line: &str) -> Result<()> {
-        let mut payload = String::with_capacity(line.len() + 1);
-        payload.push_str(line);
-        payload.push('\n');
-        let bytes = payload.len() as u64;
+        let bytes = line.len() as u64 + 1;
 
         // 单行本身就超限时不做轮转（否则会无限轮转），直接写进当前片
-        if self.written_bytes > 0
-            && self.written_bytes + bytes > self.config.max_file_bytes
-        {
+        if self.written_bytes > 0 && self.written_bytes + bytes > self.config.max_file_bytes {
             self.rotate().await?;
         }
 
@@ -162,42 +170,89 @@ impl LogWriter {
             self.file = Some(open_append(&path).await?);
             self.written_bytes = 0;
         }
-        let Some(file) = self.file.as_mut() else {
-            return Err(AppCatchError::Unsupported(
-                "日志文件在轮转后未能重新打开".to_string(),
-            ));
-        };
-        file.write_all(payload.as_bytes())
-            .await
-            .map_err(|e| AppCatchError::io(self.active_path(), e))?;
 
+        self.buffer.extend_from_slice(line.as_bytes());
+        self.buffer.push(b'\n');
         self.written_bytes += bytes;
         self.total_lines += 1;
         self.pending_lines += 1;
 
         if self.pending_lines >= self.config.flush_every.max(1)
-            || self.last_flush.elapsed() >= self.config.flush_interval
+            || self.buffer.len() >= WRITE_BUFFER_BYTES
         {
-            self.flush().await?;
+            self.write_buffer().await?;
         }
         Ok(())
     }
 
-    /// flush + sync，把缓冲刷到磁盘。
+    /// 把缓冲交给操作系统并 `sync_all` 到磁盘。
+    ///
+    /// 代价高（尤其 macOS 的 `F_FULLFSYNC`），只在需要「断电也不丢」的时刻调用：
+    /// 带回执的控制事件、轮转、会话结束，以及空闲时的定时同步（[`LogWriter::flush_idle`]）。
     pub async fn flush(&mut self) -> Result<()> {
+        self.write_buffer().await?;
         // 先把路径取出来：file 的可变借用期间不能再借用 self
         let active = self.active_path();
         if let Some(file) = self.file.as_mut() {
-            file.flush()
-                .await
-                .map_err(|e| AppCatchError::io(&active, e))?;
-            // sync_all 让数据真正落到磁盘：进程被强杀后日志仍然完整
             file.sync_all()
                 .await
                 .map_err(|e| AppCatchError::io(&active, e))?;
         }
+        self.last_sync = Instant::now();
+        Ok(())
+    }
+
+    /// 只把缓冲交给操作系统，不做 `sync_all`。
+    ///
+    /// 返回后别的读者打开文件就一定能读到这些行；启动器进程此刻被强杀也不会丢
+    /// （数据已在内核里）。比 [`LogWriter::flush`] 便宜得多，捕获管线在队列排空时调用，
+    /// 也用在「通知读者有新内容」之前。
+    pub async fn flush_to_os(&mut self) -> Result<()> {
+        self.write_buffer().await
+    }
+
+    /// 写入空闲时调用：把缓冲交给操作系统；距上次同步超过 `flush_interval` 再顺带 `sync_all`。
+    ///
+    /// 捕获管线在队列排空时调用它。持续有输出时队列不会排空，同步就自然推迟到下一个空闲点，
+    /// 不会在积压时卡住写盘任务；数据在此期间已经按行数 / 缓冲大小交给了操作系统。
+    pub async fn flush_idle(&mut self) -> Result<()> {
+        if self.last_sync.elapsed() >= self.config.flush_interval {
+            self.flush().await
+        } else {
+            self.write_buffer().await
+        }
+    }
+
+    /// 缓冲里还没交给操作系统的字节数（测试与诊断用）。
+    pub fn buffered_bytes(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// 把缓冲一次性写进当前活跃片，并等到写入真正完成。
+    ///
+    /// tokio 的 `File::write_all` 返回时数据可能还在阻塞线程池里写，紧跟的 `flush` 会等它完成，
+    /// 因此返回即「已交给操作系统」。
+    async fn write_buffer(&mut self) -> Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let active = self.active_path();
+        if self.file.is_none() {
+            self.file = Some(open_append(&active).await?);
+        }
+        let Some(file) = self.file.as_mut() else {
+            return Err(AppCatchError::Unsupported(
+                "日志文件在轮转后未能重新打开".to_string(),
+            ));
+        };
+        file.write_all(&self.buffer)
+            .await
+            .map_err(|e| AppCatchError::io(&active, e))?;
+        file.flush()
+            .await
+            .map_err(|e| AppCatchError::io(&active, e))?;
+        self.buffer.clear();
         self.pending_lines = 0;
-        self.last_flush = Instant::now();
         Ok(())
     }
 
@@ -214,7 +269,7 @@ impl LogWriter {
 
     /// 把当前活跃片改名为 `events.<seq>.jsonl`，并新建空的活跃片。
     async fn rotate(&mut self) -> Result<()> {
-        // 先确保当前片落盘并关闭，否则 Windows 上 rename 会因占用失败
+        // 先把缓冲写进当前片（这些行属于它）并落盘、关闭，否则 Windows 上 rename 会因占用失败
         self.flush().await?;
         if let Some(mut file) = self.file.take() {
             let _ = file.shutdown().await;
@@ -308,7 +363,10 @@ mod tests {
 
         for i in 0..10 {
             writer
-                .write_event(&SessionEvent::output(StreamKind::Stdout, format!("line {i}")))
+                .write_event(&SessionEvent::output(
+                    StreamKind::Stdout,
+                    format!("line {i}"),
+                ))
                 .await
                 .expect("写入失败");
         }
@@ -423,17 +481,150 @@ mod tests {
             .expect("写入失败");
         writer.close().await.expect("关闭失败");
 
-        let text = std::fs::read_to_string(dir.path().join(paths::SESSION_LOG_FILE))
-            .expect("读失败");
+        let text =
+            std::fs::read_to_string(dir.path().join(paths::SESSION_LOG_FILE)).expect("读失败");
         // 每次构造事件都会取当前时间戳，因此不能与新建事件整体比较，只比对语义字段
         match SessionEvent::from_jsonl_line(text.trim()).expect("解析失败") {
-            SessionEvent::Exit { v, code, reason, ts } => {
+            SessionEvent::Exit {
+                v,
+                code,
+                reason,
+                ts,
+            } => {
                 assert_eq!(v, crate::session::SESSION_EVENT_VERSION);
                 assert_eq!(code, Some(7));
                 assert_eq!(reason, ExitReason::Crashed);
                 assert!(!ts.is_empty(), "时间戳不应为空");
             }
             other => panic!("应为 exit 事件，实际: {other:?}"),
+        }
+    }
+
+    /// 只靠缓冲时的配置：行数阈值很大、不按时间同步，便于观察「什么时候才真正写到文件」。
+    fn buffered_config(max_bytes: u64, max_shards: usize, flush_every: usize) -> LogWriterConfig {
+        LogWriterConfig {
+            max_file_bytes: max_bytes,
+            max_shards,
+            flush_every,
+            flush_interval: Duration::from_secs(3600),
+        }
+    }
+
+    fn output(text: String) -> SessionEvent {
+        SessionEvent::output(StreamKind::Stdout, text)
+    }
+
+    fn file_lines(path: &Path) -> usize {
+        std::fs::read_to_string(path)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn lines_stay_buffered_until_count_threshold_or_explicit_flush() {
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let active = dir.path().join(paths::SESSION_LOG_FILE);
+        let mut writer = LogWriter::open(dir.path(), buffered_config(1024 * 1024, 5, 3))
+            .await
+            .expect("打开写入器失败");
+
+        writer
+            .write_event(&output("a".into()))
+            .await
+            .expect("写入失败");
+        writer
+            .write_event(&output("b".into()))
+            .await
+            .expect("写入失败");
+        assert_eq!(file_lines(&active), 0, "未到行数阈值前应留在缓冲里");
+        assert!(writer.buffered_bytes() > 0);
+
+        writer.flush_to_os().await.expect("交给系统失败");
+        assert_eq!(file_lines(&active), 2, "flush_to_os 之后读者应能读到");
+        assert_eq!(writer.buffered_bytes(), 0);
+
+        for text in ["c", "d", "e"] {
+            writer
+                .write_event(&output(text.into()))
+                .await
+                .expect("写入失败");
+        }
+        assert_eq!(file_lines(&active), 5, "攒满 flush_every 行应自动交给系统");
+
+        writer
+            .write_event(&output("f".into()))
+            .await
+            .expect("写入失败");
+        writer.flush_idle().await.expect("空闲刷新失败");
+        assert_eq!(file_lines(&active), 6, "flush_idle 也要把缓冲交给系统");
+    }
+
+    #[tokio::test]
+    async fn full_buffer_is_written_even_below_line_threshold() {
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let active = dir.path().join(paths::SESSION_LOG_FILE);
+        let mut writer =
+            LogWriter::open(dir.path(), buffered_config(64 * 1024 * 1024, 5, usize::MAX))
+                .await
+                .expect("打开写入器失败");
+
+        let line = "z".repeat(1000);
+        let mut written = 0;
+        while std::fs::metadata(&active).map(|m| m.len()).unwrap_or(0) == 0 {
+            writer
+                .write_event(&output(line.clone()))
+                .await
+                .expect("写入失败");
+            written += 1;
+            assert!(
+                written < 1000,
+                "缓冲早该在 {WRITE_BUFFER_BYTES} 字节附近写出"
+            );
+        }
+        assert!(
+            writer.buffered_bytes() < WRITE_BUFFER_BYTES,
+            "写出之后缓冲应已清空"
+        );
+    }
+
+    /// 轮转前必须先把缓冲写进旧片：缓冲里的行属于旧片，顺序与完整性都不能乱。
+    #[tokio::test]
+    async fn rotation_flushes_buffered_lines_into_the_old_shard_in_order() {
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let mut writer = LogWriter::open(dir.path(), buffered_config(400, 100, usize::MAX))
+            .await
+            .expect("打开写入器失败");
+        for i in 0..40 {
+            writer
+                .write_event(&output(format!("ordered line {i:03} pppppppppppppppp")))
+                .await
+                .expect("写入失败");
+        }
+        writer.close().await.expect("关闭失败");
+        assert!(writer.shard_count() > 1, "应发生多次轮转");
+
+        // 按 seq 升序拼起分片，再接上活跃片，应恰好是 0..40 的原始顺序
+        let mut all = Vec::new();
+        for seq in 1..=writer.shard_count() {
+            let path = dir.path().join(shard_file_name(seq));
+            let text = std::fs::read_to_string(&path).expect("读分片失败");
+            let size = text.len() as u64;
+            assert!(size <= 400, "{} 超过分片上限: {size}", path.display());
+            all.extend(text.lines().map(str::to_string));
+        }
+        let active = dir.path().join(paths::SESSION_LOG_FILE);
+        all.extend(
+            std::fs::read_to_string(&active)
+                .expect("读活跃片失败")
+                .lines()
+                .map(str::to_string),
+        );
+        assert_eq!(all.len(), 40, "轮转不得丢行");
+        for (i, line) in all.iter().enumerate() {
+            assert!(
+                line.contains(&format!("ordered line {i:03}")),
+                "第 {i} 行顺序错乱: {line}"
+            );
         }
     }
 

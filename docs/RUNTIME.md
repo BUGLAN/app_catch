@@ -125,14 +125,32 @@ async fn start(&self, app: &AppConfig) -> Result<SessionHandle>
 async fn stop(&self, session_id: SessionId) -> Result<()>
 async fn restart(&self, session_id: SessionId, app: &AppConfig) -> Result<SessionHandle>
 
-// 查询
-async fn list_active(&self) -> Vec<SessionSnapshot>
+// 查询（列表都按启动先后排序，最后一个是最近启动的）
+async fn list_active(&self) -> Vec<SessionSnapshot>      // 只含运行中
+async fn list_sessions(&self) -> Vec<SessionSnapshot>    // 运行中 + 每个应用最近退出的 RECENT_EXITED_PER_APP（5）个
 async fn status(&self, session_id: SessionId) -> Result<SessionSnapshot>
 async fn wait_for_exit(&self, session_id: SessionId, timeout: Duration) -> Result<ExitInfo>
 
 // 重启后重关联
 async fn recover_sessions(&self) -> Result<Vec<SessionSnapshot>>
+
+// 变化通知（给 GUI 推送用）
+fn subscribe(&self) -> broadcast::Receiver<SessionNotice>
 ```
+
+`stop` 对已经退出的会话直接返回 `Ok(())`（幂等），绝不会对一个可能已被复用的 pid 调 `kill_tree`。
+
+### 变化通知
+
+`subscribe()` 返回广播接收端，管理器在下列时刻发 [`SessionNotice`](../crates/launcher-core/src/runtime/notice.rs)：
+
+| 通知 | 时刻 |
+| --- | --- |
+| `Changed(id)` | 启动、退出（状态已回写之后）、重关联，或状态采集发现窗口标题 / 端口变化 |
+| `LogAppended(id)` | 写盘任务排空一次队列、以及收尾关闭文件之后；发出时数据已交给操作系统，读者打开文件就能读到 |
+
+通知只说明「哪个会话变了」，不带数据；接收方落后超过 `NOTICE_CAPACITY`（256）条会收到 `Lagged`，
+应按「所有会话都可能变了」处理。没有订阅者时发送失败是正常情况。
 
 ### 数据结构
 
@@ -189,8 +207,13 @@ for snapshot in manager.list_active().await {
 | --- | --- | --- |
 | channel 容量 | 8192 条事件 | 有界队列，防止内存无限增长 |
 | 单行上限 | 1 MiB | 超长行被切成多条 `output` 事件，不丢内容 |
-| flush 批量 | 每 64 条或每 100ms | 兼顾吞吐与时延 |
-| 退出时 | 强制 flush + sync | 进程退出即可见完整日志 |
+| 写盘缓冲 | 用户态 64 KiB | 逐行 `write_all` 每次都要走一趟阻塞线程池，扛不住一口气打印的进程 |
+| 交给操作系统 | 写盘队列排空时、每 64 条、或缓冲满 | 交出去后读者立刻可读，启动器被强杀也不丢 |
+| 同步到磁盘（`sync_all`） | 队列空闲时，距上次同步 ≥ 100ms 才做一次 | 只防断电 / 系统崩溃；积压时绝不同步，否则一次同步就会让队列积满、开始丢行 |
+| 退出时 | 强制写出 + sync | 进程退出即可见完整日志 |
+
+吞吐基准：`cargo run -p launcher-core --release --example flood_bench`。逐行写盘 + 每 64 行同步的旧实现
+3 万行洪水丢约 65%；现在 3 万 / 20 万行都是 0 丢弃，约 16 万事件/秒。`tests/capture_flood.rs` 以 10% 为上限守住它。
 
 三条硬性保证：
 

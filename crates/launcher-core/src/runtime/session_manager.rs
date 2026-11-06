@@ -17,21 +17,29 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{broadcast, Mutex, Notify};
 use tokio::task::JoinHandle;
 
 use crate::config::{AppConfig, AppId};
 use crate::error::{AppCatchError, Result};
 use crate::paths;
 use crate::platform::{ProcessBackend, ProcessHandle, ProcessStartTime, SpawnRequest};
-use crate::runtime::capture::{CaptureConfig, CapturePipeline, CaptureSink};
+use crate::runtime::capture::{AppendNotify, CaptureConfig, CapturePipeline, CaptureSink};
 use crate::runtime::hooks;
 use crate::runtime::log_writer::LogWriter;
+use crate::runtime::notice::{SessionNotice, NOTICE_CAPACITY};
 use crate::runtime::status::{default_status_probe, ProbeContext, StatusProbe, StatusSnapshot};
 use crate::session::{now_rfc3339, ExitReason, RunState, SessionEvent, SessionId};
+
+/// [`SessionManager::list_sessions`] 里每个应用最多带几条已退出的会话。
+///
+/// 已退出会话一直留在管理器里（`status` 仍可查），但列表只需要最近几条：
+/// 足够让界面在进程退出后继续展示它的日志与退出码，又不会让列表无限变长。
+pub const RECENT_EXITED_PER_APP: usize = 5;
 
 /// 状态事件限流窗口：一分钟。
 const STATUS_RATE_WINDOW: Duration = Duration::from_secs(60);
@@ -107,6 +115,16 @@ struct SessionState {
 
 /// 运行中会话的完整记录（进程身份 + 状态 + 主动停止标记 + 后台任务句柄）。
 struct ActiveSession {
+    /// 登记顺序（单调递增），列表按它排序 = 按启动先后排序。
+    ///
+    /// 不用 `started_at` 字符串排序：RFC3339 的小数秒位数不固定，字典序不等于时间序。
+    seq: u64,
+    /// 是否出现在 [`SessionManager::list_sessions`] 里。
+    ///
+    /// 重关联时发现进程早已消失的会话为 `false`：它们在启动器关闭期间就结束了，
+    /// 退出原因无从得知（日志里只能记成 crashed），列出来只会把应用误标成「已崩溃」。
+    /// 它们仍可以通过 `status` 单独查询。
+    listed: bool,
     handle: ProcessHandle,
     /// 是否收到过主动停止请求；决定 Exit 事件的 reason 是 killed 还是 normal/crashed。
     stop_requested: bool,
@@ -181,6 +199,10 @@ pub struct SessionManager {
     active: Arc<Mutex<HashMap<SessionId, ActiveSession>>>,
     /// 状态采集探针（可替换，测试用假 probe 驱动）。
     status_probe: Arc<dyn StatusProbe>,
+    /// 下一个会话的登记序号。
+    next_seq: AtomicU64,
+    /// 会话变化通知（见 [`SessionManager::subscribe`]）。
+    notices: broadcast::Sender<SessionNotice>,
 }
 
 impl std::fmt::Debug for SessionManager {
@@ -209,7 +231,35 @@ impl SessionManager {
             sessions_root: sessions_root.into(),
             active: Arc::new(Mutex::new(HashMap::new())),
             status_probe: default_status_probe(),
+            next_seq: AtomicU64::new(0),
+            notices: broadcast::channel(NOTICE_CAPACITY).0,
         }
+    }
+
+    /// 订阅会话变化通知。
+    ///
+    /// 语义见 [`crate::runtime::notice`]：通知只说明「哪个会话变了」，
+    /// 订阅方收到后自行调用 [`SessionManager::status`] 或读日志。
+    pub fn subscribe(&self) -> broadcast::Receiver<SessionNotice> {
+        self.notices.subscribe()
+    }
+
+    /// 发一条通知；没有订阅者时静默忽略。
+    fn notify(&self, notice: SessionNotice) {
+        let _ = self.notices.send(notice);
+    }
+
+    /// 写盘任务每批写完后调用的回调：发 `LogAppended`。
+    fn append_notify(&self, session_id: SessionId) -> AppendNotify {
+        let notices = self.notices.clone();
+        Arc::new(move || {
+            let _ = notices.send(SessionNotice::LogAppended(session_id));
+        })
+    }
+
+    /// 取一个新的登记序号。
+    fn next_seq(&self) -> u64 {
+        self.next_seq.fetch_add(1, Ordering::Relaxed)
     }
 
     /// 替换状态采集探针（测试注入假 probe；M2 想加状态项也可整体替换）。
@@ -298,11 +348,12 @@ impl SessionManager {
         }
         writer.flush().await?;
 
-        let pipeline = CapturePipeline::start(
+        let pipeline = CapturePipeline::start_with_notify(
             spawned.stdout,
             spawned.stderr,
             writer,
             self.capture.clone(),
+            Some(self.append_notify(session_id)),
         );
 
         // 写盘权柄：状态循环与退出收尾共用它，谁都不再自己开 LogWriter
@@ -323,7 +374,7 @@ impl SessionManager {
         let status_task = self.spawn_status_loop(
             session_id,
             spawned.handle.pid,
-            spawned.handle.clone(),
+            spawned.handle,
             sink.clone(),
             Arc::clone(&exit_signal),
         );
@@ -333,6 +384,8 @@ impl SessionManager {
             guard.insert(
                 session_id,
                 ActiveSession {
+                    seq: self.next_seq(),
+                    listed: true,
                     handle: spawned.handle,
                     stop_requested: false,
                     state: SessionState {
@@ -348,6 +401,7 @@ impl SessionManager {
                 },
             );
         }
+        self.notify(SessionNotice::Changed(session_id));
 
         // 守护任务：等进程退出 -> 唤醒状态循环 -> 收尾管线（写 exit 并关闭） -> 回写状态
         //
@@ -359,6 +413,7 @@ impl SessionManager {
         // 4. 最后回写会话状态，让 `wait_for_exit` 能看到结果。
         let backend = Arc::clone(&self.backend);
         let active = Arc::clone(&self.active);
+        let notices = self.notices.clone();
         let handle = spawned.handle;
         tokio::spawn(async move {
             // 先等进程结束（这一步决定退出码）
@@ -399,13 +454,18 @@ impl SessionManager {
 
             // 收尾管线：读完剩余输出 -> overflow 补记 -> 写 exit -> flush+close。
             // 这是会话日志唯一的收尾入口，exit 必然落在末尾。
-            let _ = pipeline.close_with(Some(SessionEvent::exit(code, reason))).await;
+            let _ = pipeline
+                .close_with(Some(SessionEvent::exit(code, reason)))
+                .await;
 
-            let mut guard = active.lock().await;
-            if let Some(session) = guard.get_mut(&session_id) {
-                session.state.state = state_for_reason(reason);
-                session.state.last_exit = Some(ExitInfo { code, reason });
+            {
+                let mut guard = active.lock().await;
+                if let Some(session) = guard.get_mut(&session_id) {
+                    session.state.state = state_for_reason(reason);
+                    session.state.last_exit = Some(ExitInfo { code, reason });
+                }
             }
+            let _ = notices.send(SessionNotice::Changed(session_id));
         });
 
         Ok(SessionHandle {
@@ -456,6 +516,7 @@ impl SessionManager {
         // 组合 probe 里只要有一个需要进程树，就枚举一次；都不需要则整条路径省掉
         let needs_tree = probe.needs_process_tree();
         let active = Arc::clone(&self.active);
+        let notices = self.notices.clone();
         let mut limiter = StatusRateLimiter::new(self.capture.max_status_events);
 
         Some(tokio::spawn(async move {
@@ -484,7 +545,7 @@ impl SessionManager {
                     let descendants = if needs_tree {
                         // 后端实现（Windows: Job 成员表，微秒级）；不支持则返回 None。
                         let backend_for_tree = Arc::clone(&backend);
-                        let handle_for_tree = handle.clone();
+                        let handle_for_tree = handle;
                         let from_backend = tokio::task::spawn_blocking(move || {
                             backend_for_tree.descendant_pids(&handle_for_tree)
                         })
@@ -522,6 +583,10 @@ impl SessionManager {
                         session.state.latest_status = Some(sampled.clone());
                     }
                 }
+                // 快照变了就通知（不受日志限流影响：界面读的正是这份实时快照）
+                if changed {
+                    let _ = notices.send(SessionNotice::Changed(session_id));
+                }
 
                 // 只有变化时才写事件；再叠加限流保护。
                 // 走 sink 而不是新开 writer：分片序号与保留策略由那个唯一的 writer 统一维护。
@@ -555,9 +620,14 @@ impl SessionManager {
     pub async fn stop(&self, session_id: SessionId) -> Result<()> {
         let handle = {
             let mut guard = self.active.lock().await;
-            let session = guard.get_mut(&session_id).ok_or_else(|| {
-                AppCatchError::NotFound(format!("运行中的会话 {session_id}"))
-            })?;
+            let session = guard
+                .get_mut(&session_id)
+                .ok_or_else(|| AppCatchError::NotFound(format!("运行中的会话 {session_id}")))?;
+            // 已经退出的会话：没有进程可停，直接视为成功（幂等）。
+            // 绝不能对它调 kill_tree——pid 可能早已被别的进程复用。
+            if session.state.state != RunState::Running {
+                return Ok(());
+            }
             // 先置标记再杀：守护任务的判定一定能看到「这是主动停止」
             session.stop_requested = true;
             session.handle
@@ -577,16 +647,51 @@ impl SessionManager {
         self.start(app).await
     }
 
-    /// 列出仍在运行的会话快照（按 session_id 稳定排序）。
+    /// 列出仍在运行的会话快照（按启动先后排序，最后一个是最近启动的）。
     pub async fn list_active(&self) -> Vec<SessionSnapshot> {
         let guard = self.active.lock().await;
-        let mut list: Vec<SessionSnapshot> = guard
+        let mut list: Vec<(u64, SessionSnapshot)> = guard
             .iter()
             .filter(|(_, s)| s.state.state == RunState::Running)
-            .map(|(id, s)| snapshot_of(*id, s))
+            .map(|(id, s)| (s.seq, snapshot_of(*id, s)))
             .collect();
-        list.sort_by_key(|s| s.session_id);
-        list
+        drop(guard);
+        list.sort_by_key(|(seq, _)| *seq);
+        list.into_iter().map(|(_, snapshot)| snapshot).collect()
+    }
+
+    /// 列出运行中的会话，外加每个应用最近退出的至多 [`RECENT_EXITED_PER_APP`] 个会话。
+    ///
+    /// 按启动先后排序。给界面用：进程退出后会话仍留在列表里，
+    /// 用户还能看到它的退出码与最后的输出——这往往正是最需要看日志的时候。
+    /// 重关联时已经消失的旧会话不在其中（见 `ActiveSession::listed`）。
+    pub async fn list_sessions(&self) -> Vec<SessionSnapshot> {
+        let guard = self.active.lock().await;
+        let mut list: Vec<(u64, SessionSnapshot)> = guard
+            .iter()
+            .filter(|(_, s)| s.listed)
+            .map(|(id, s)| (s.seq, snapshot_of(*id, s)))
+            .collect();
+        drop(guard);
+        list.sort_by_key(|(seq, _)| *seq);
+
+        // 从新到旧数每个应用的已退出会话，超出上限的不再列出
+        let mut exited_per_app: HashMap<AppId, usize> = HashMap::new();
+        let mut keep = vec![true; list.len()];
+        for (index, (_, snapshot)) in list.iter().enumerate().rev() {
+            if snapshot.state == RunState::Running {
+                continue;
+            }
+            let count = exited_per_app.entry(snapshot.app_id.clone()).or_insert(0);
+            *count += 1;
+            if *count > RECENT_EXITED_PER_APP {
+                keep[index] = false;
+            }
+        }
+        list.into_iter()
+            .zip(keep)
+            .filter_map(|((_, snapshot), keep)| keep.then_some(snapshot))
+            .collect()
     }
 
     /// 查询单个会话状态；未知会话返回 NotFound。
@@ -723,7 +828,11 @@ impl SessionManager {
                 start_time,
                 app_id,
                 ..
-            } => (*pid, ProcessStartTime::from_raw(*start_time), app_id.clone()),
+            } => (
+                *pid,
+                ProcessStartTime::from_raw(*start_time),
+                app_id.clone(),
+            ),
             _ => return Ok(None),
         };
         let started_at = start.timestamp().to_string();
@@ -756,6 +865,8 @@ impl SessionManager {
             guard.insert(
                 session_id,
                 ActiveSession {
+                    seq: self.next_seq(),
+                    listed: false,
                     handle: ProcessHandle::new(pid, start_time),
                     stop_requested: false,
                     state: SessionState {
@@ -789,11 +900,12 @@ impl SessionManager {
         // 因此这里开一条两侧都没有 reader 的管线：它唯一的 writer 从此独占该会话目录，
         // 后续 status 事件、以及将来的 exit 事件都经它的 sink 排队，
         // 不会再有第二个 writer 与它争抢分片序号。
-        let pipeline = CapturePipeline::start(
+        let pipeline = CapturePipeline::start_with_notify(
             None,
             None,
             LogWriter::open(dir, self.capture.writer.clone()).await?,
             self.capture.clone(),
+            Some(self.append_notify(session_id)),
         );
         let sink = pipeline.sink();
         let exit_signal = Arc::new(Notify::new());
@@ -804,20 +916,21 @@ impl SessionManager {
             .await;
 
         // 接管的活进程同样需要状态采集：否则重关联后的会话会永远没有窗口标题/端口
-        let status_task =
-            self.spawn_status_loop(
-                session_id,
-                handle.pid,
-                handle.clone(),
-                sink.clone(),
-                Arc::clone(&exit_signal),
-            );
+        let status_task = self.spawn_status_loop(
+            session_id,
+            handle.pid,
+            handle,
+            sink.clone(),
+            Arc::clone(&exit_signal),
+        );
 
         {
             let mut guard = self.active.lock().await;
             guard.insert(
                 session_id,
                 ActiveSession {
+                    seq: self.next_seq(),
+                    listed: true,
                     handle,
                     stop_requested: false,
                     state: SessionState {
@@ -833,12 +946,14 @@ impl SessionManager {
                 },
             );
         }
+        self.notify(SessionNotice::Changed(session_id));
 
         // 接管会话的守护任务：等它退出后同样补写 exit 并回写状态。
         // 关键点是**复用同一份 pipeline/sink**，绝不新开 writer。
         {
             let backend = Arc::clone(&self.backend);
             let active = Arc::clone(&self.active);
+            let notices = self.notices.clone();
             let handle_for_wait = handle;
             tokio::spawn(async move {
                 let exit = backend.wait(&handle_for_wait).await;
@@ -876,11 +991,14 @@ impl SessionManager {
                     .close_with(Some(SessionEvent::exit(code, reason)))
                     .await;
 
-                let mut guard = active.lock().await;
-                if let Some(session) = guard.get_mut(&session_id) {
-                    session.state.state = state_for_reason(reason);
-                    session.state.last_exit = Some(ExitInfo { code, reason });
+                {
+                    let mut guard = active.lock().await;
+                    if let Some(session) = guard.get_mut(&session_id) {
+                        session.state.state = state_for_reason(reason);
+                        session.state.last_exit = Some(ExitInfo { code, reason });
+                    }
                 }
+                let _ = notices.send(SessionNotice::Changed(session_id));
             });
         }
 

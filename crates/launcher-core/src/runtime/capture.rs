@@ -114,6 +114,7 @@ pub fn strip_line_ending(raw: &[u8]) -> &[u8] {
 /// - 界面显示成 `[33m` 之类的残渣（真身是 `ESC[33m`）；
 /// - 日志文件无法 grep，结构化事件里的文本字段被污染；
 /// - 任何后续消费者（导出、搜索、别的 GUI）都得各自再剥一遍。
+///
 /// 因此在唯一入口剥一次，让落盘内容就是干净文本。
 ///
 /// 处理三类序列（其余原样保留，宁可少剥也不误删正文）：
@@ -209,7 +210,10 @@ pub fn decode_line_lossless(raw: &[u8]) -> (String, OutputEncoding) {
 
     // 1) 严格 UTF-8：合法即无损返回
     if let Ok(text) = std::str::from_utf8(bytes) {
-        return (strip_ansi(Cow::Borrowed(text)).into_owned(), OutputEncoding::Utf8);
+        return (
+            strip_ansi(Cow::Borrowed(text)).into_owned(),
+            OutputEncoding::Utf8,
+        );
     }
 
     // 2) 超长行按字节切分留下的残片：必须按 UTF-8 保留，不能整体改判成 GBK
@@ -225,7 +229,10 @@ pub fn decode_line_lossless(raw: &[u8]) -> (String, OutputEncoding) {
 
     // 3) 平台回退编码
     match decode_with_platform_fallback(bytes) {
-        Some(text) => (strip_ansi(Cow::Owned(text)).into_owned(), OutputEncoding::Gbk),
+        Some(text) => (
+            strip_ansi(Cow::Owned(text)).into_owned(),
+            OutputEncoding::Gbk,
+        ),
         // 4) 都不行：lossy 兜底，但必须如实标记
         None => (
             strip_ansi(Cow::Owned(String::from_utf8_lossy(bytes).into_owned())).into_owned(),
@@ -377,6 +384,12 @@ enum CaptureEvent {
     Finish(Option<SessionEvent>),
 }
 
+/// 写盘任务每排空一次队列就调用一次的回调；调用时这批事件已对其他读者可见。
+///
+/// 会话管理器用它发 [`crate::runtime::SessionNotice::LogAppended`]。
+/// 回调在写盘任务里同步执行，必须足够轻（例如往广播通道里 `send` 一条消息）。
+pub type AppendNotify = Arc<dyn Fn() + Send + Sync>;
+
 /// 写盘权柄：整个会话唯一的日志写入入口。
 ///
 /// 谁持有它谁就能往会话日志追加事件，但它只克隆 `Sender`，
@@ -397,7 +410,10 @@ impl CaptureSink {
     ///
     /// 输出流专用。**绝不能**改成 `await`——子进程会因为写满管道而卡死。
     pub fn try_write(&self, event: SessionEvent) -> bool {
-        match self.sender.try_send(CaptureEvent::Write { event, ack: None }) {
+        match self
+            .sender
+            .try_send(CaptureEvent::Write { event, ack: None })
+        {
             Ok(()) => true,
             // 通道满 / 写盘任务已结束：计入丢弃，由 overflow 事件如实反映
             Err(_) => {
@@ -514,6 +530,7 @@ impl CapturePipeline {
         mut writer: LogWriter,
         mut receiver: mpsc::Receiver<CaptureEvent>,
         dropped: Arc<AtomicU64>,
+        on_append: Option<AppendNotify>,
     ) -> tokio::task::JoinHandle<Result<u64>> {
         tokio::spawn(async move {
             let mut written = 0u64;
@@ -556,6 +573,17 @@ impl CapturePipeline {
                             // 接收端已丢弃（调用方不再等）也无所谓：事件已经写进日志了
                             let _ = ack.send(());
                         }
+
+                        // 队列排空 = 一批事件写完：把缓冲交给操作系统（读者此刻就能读到），
+                        // 到点了再顺带同步到磁盘，然后通知。写盘与通知都只在批尾做一次：
+                        // 输出越快，一批越大，写盘次数反而越少；高频输出时也不会把通知通道刷爆。
+                        // 磁盘同步只在这里（空闲时）做，绝不在积压时卡住写盘任务。
+                        if receiver.is_empty() {
+                            writer.flush_idle().await?;
+                            if let Some(notify) = &on_append {
+                                notify();
+                            }
+                        }
                     }
                     CaptureEvent::Finish(last) => {
                         // 顺序不可换：先补 overflow，再写 exit —— exit 必须是最后一条
@@ -571,6 +599,10 @@ impl CapturePipeline {
 
             // 无论从哪条路径退出，都必须 flush + sync + close
             writer.close().await?;
+            // 收尾那一批（最后几行输出 + exit）没有机会走上面的「排空即通知」，这里补一次
+            if let Some(notify) = &on_append {
+                notify();
+            }
             Ok(written)
         })
     }
@@ -582,11 +614,22 @@ impl CapturePipeline {
         writer: LogWriter,
         config: CaptureConfig,
     ) -> CapturePipeline {
+        Self::start_with_notify(stdout, stderr, writer, config, None)
+    }
+
+    /// 同 [`CapturePipeline::start`]，另外在每批事件写完后调用 `on_append`。
+    pub fn start_with_notify(
+        stdout: Option<Box<dyn AsyncRead + Send + Unpin>>,
+        stderr: Option<Box<dyn AsyncRead + Send + Unpin>>,
+        writer: LogWriter,
+        config: CaptureConfig,
+        on_append: Option<AppendNotify>,
+    ) -> CapturePipeline {
         let capacity = config.channel_capacity.max(1);
         let (sender, receiver) = mpsc::channel::<CaptureEvent>(capacity);
         let dropped = Arc::new(AtomicU64::new(0));
 
-        let writer_task = Self::spawn_writer(writer, receiver, Arc::clone(&dropped));
+        let writer_task = Self::spawn_writer(writer, receiver, Arc::clone(&dropped), on_append);
 
         // sink 保留一份在管线里（交给状态循环与退出收尾）；
         // 其余克隆交给读任务，全部 drop 后通道关闭，写盘任务自然收尾。
@@ -605,7 +648,13 @@ impl CapturePipeline {
             )
         });
         let stderr_task = stderr.map(|reader| {
-            Self::spawn_reader(StreamKind::Stderr, reader, sender, Arc::clone(&dropped), config)
+            Self::spawn_reader(
+                StreamKind::Stderr,
+                reader,
+                sender,
+                Arc::clone(&dropped),
+                config,
+            )
         });
 
         Self {
@@ -833,7 +882,10 @@ mod tests {
             OutputEncoding::Gbk,
             "非 UTF-8 但可被 GBK 解出的行应标记 gbk: {encodings:?}"
         );
-        assert!(encodings[1].0.contains("\u{20AC}"), "0x80 在 GBK 中是欧元符号");
+        assert!(
+            encodings[1].0.contains("\u{20AC}"),
+            "0x80 在 GBK 中是欧元符号"
+        );
         assert!(
             !encodings[1].0.contains(char::REPLACEMENT_CHARACTER),
             "合法 GBK 不应产生替换字符: {encodings:?}"
@@ -841,6 +893,7 @@ mod tests {
     }
 
     /// 「中文测试」的 GBK(cp936) 字节，Windows 中文环境控制台/日志的默认编码。
+    #[cfg_attr(not(windows), allow(dead_code))]
     const GBK_ZHONGWEN_CESHI: &[u8] = &[0xD6, 0xD0, 0xCE, 0xC4, 0xB2, 0xE2, 0xCA, 0xD4];
 
     /// 回归：GBK 字节必须无损还原并标记 gbk，绝不能被替换字符吃掉。
@@ -969,7 +1022,10 @@ mod tests {
 
         // reader 读完前不消费 channel
         let read_lines_count = reader_task.await.expect("读任务失败").expect("读取出错");
-        assert_eq!(read_lines_count, 200, "reader 不应因 channel 满而停止读管道");
+        assert_eq!(
+            read_lines_count, 200,
+            "reader 不应因 channel 满而停止读管道"
+        );
 
         let dropped_now = dropped.load(Ordering::Relaxed);
         assert!(dropped_now > 0, "容量为 1 时应发生丢弃，实际 0");
@@ -979,10 +1035,14 @@ mod tests {
         let writer = LogWriter::open(dir.path(), fast_writer_config())
             .await
             .expect("打开写入器失败");
-        let writer_task = CapturePipeline::spawn_writer(writer, receiver, Arc::clone(&dropped));
+        let writer_task =
+            CapturePipeline::spawn_writer(writer, receiver, Arc::clone(&dropped), None);
 
         // reader 结束时 sender 已随之 drop，receiver 关闭，writer 会自然收尾
-        let written = writer_task.await.expect("writer 任务失败").expect("写盘出错");
+        let written = writer_task
+            .await
+            .expect("writer 任务失败")
+            .expect("写盘出错");
         assert!(written > 0);
 
         let text = std::fs::read_to_string(dir.path().join(crate::paths::SESSION_LOG_FILE))
@@ -999,7 +1059,6 @@ mod tests {
             "overflow 事件应如实记录丢弃行数"
         );
     }
-
 
     #[tokio::test]
     async fn pipeline_reports_per_stream_line_counts() {
@@ -1035,12 +1094,13 @@ mod tests {
         let mut stdout_count = 0;
         let mut stderr_count = 0;
         for line in text.lines().filter(|l| !l.is_empty()) {
-            match SessionEvent::from_jsonl_line(line).expect("解析失败") {
-                SessionEvent::Output { stream, .. } => match stream {
+            if let SessionEvent::Output { stream, .. } =
+                SessionEvent::from_jsonl_line(line).expect("解析失败")
+            {
+                match stream {
                     StreamKind::Stdout => stdout_count += 1,
                     StreamKind::Stderr => stderr_count += 1,
-                },
-                _ => {}
+                }
             }
         }
         assert_eq!(stdout_count, 2);
